@@ -11,6 +11,7 @@ import { meRoutes } from './routes/me.js';
 import { orderRoutes } from './routes/orders.js';
 import { cafeRoutes } from './routes/cafe.js';
 import { adminRoutes } from './routes/admin.js';
+import { reportRoutes } from './routes/reports.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -55,5 +56,6 @@ export async function buildApp() {
   await app.register(orderRoutes);
   await app.register(cafeRoutes);
   await app.register(adminRoutes);
+  await app.register(reportRoutes);
   return app;
 }

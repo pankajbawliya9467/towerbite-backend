@@ -221,3 +221,39 @@ test('search finds dishes with their cafe, and cafes', async () => {
   assert.ok(cheap.body.dishes.every((d: any) => d.price <= 30 && d.isVeg));
   assert.equal((await call('GET', `/v1/locations/spaze-tech-park/search?q=${encodeURIComponent("%_'")}`)).status, 200);
 });
+
+test('cafe reports: numbers, comparison and CSV downloads', async () => {
+  const cafeStaff = H('cafe@towerbites.dev');
+  const cafe = (await call('GET', '/v1/cafe', cafeStaff)).body;
+  const emp = H(`+9193${String(Date.now()).slice(-8)}`);
+  await call('PUT', '/v1/me', emp, { name: 'Report Tester' });
+  const placed = await call('POST', '/v1/orders', emp, {
+    cafeId: cafe.id, items: [{ menuItemId: cafe.items[0].id, qty: 3 }],
+    address: { tower: 'Tower A', floor: '2', company: '=Evil Corp', desk: 'A-1' },
+  });
+  assert.equal(placed.status, 201, JSON.stringify(placed.body));
+  for (const a of ['accept', 'dispatch', 'deliver']) await call('POST', `/v1/cafe/orders/${placed.body.id}/${a}`, cafeStaff, {});
+
+  const r = await call('GET', '/v1/cafe/reports', cafeStaff);
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.byDay.length, 7);
+  assert.equal(r.body.byHour.length, 24);
+  assert.ok(r.body.totals.sales >= placed.body.total);
+  assert.ok(r.body.topItems.some((i: any) => i.name === cafe.items[0].name && i.qty >= 3));
+  assert.ok(r.body.companies.some((c: any) => c.name === '=Evil Corp'));
+  assert.equal(r.body.totals.avgOrder, Math.round(r.body.totals.sales / r.body.totals.delivered));
+
+  const one = await call('GET', '/v1/cafe/reports?from=2026-01-05&to=2026-01-05', cafeStaff);
+  assert.equal(one.body.byDay.length, 1);
+  assert.equal(one.body.range.prevFrom, '2026-01-04');
+  assert.equal((await call('GET', '/v1/cafe/reports?from=2026-02-01&to=2026-01-01', cafeStaff)).status, 400);
+  assert.equal((await call('GET', '/v1/cafe/reports', emp)).status, 403);
+
+  const res = await app.inject({ method: 'GET', url: '/v1/cafe/reports/orders.csv', headers: cafeStaff });
+  assert.equal(res.statusCode, 200);
+  assert.match(String(res.headers['content-type']), /text\/csv/);
+  assert.match(res.body, /Order no,Placed \(IST\)/);
+  assert.ok(res.body.includes(`'=Evil Corp`), 'formula in a cell is neutralised');
+  const items = await app.inject({ method: 'GET', url: '/v1/cafe/reports/items.csv', headers: cafeStaff });
+  assert.match(items.body, /Item,Quantity sold/);
+});
