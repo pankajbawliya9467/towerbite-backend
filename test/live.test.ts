@@ -6,6 +6,19 @@ process.env.SUPABASE_URL = 'http://realtime.test';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-key';
 
 import { test, after, beforeEach } from 'node:test';
+import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
+
+// A signing key standing in for the Supabase project's ES256 key (served as its JWKS below).
+const { privateKey, publicKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+const jwk = { ...publicKey.export({ format: 'jwk' }), kid: 'test-kid', alg: 'ES256', use: 'sig' };
+let jwksFetches = 0;
+const b64u = (b: Buffer | string) => Buffer.from(b).toString('base64url');
+function makeToken(claims: Record<string, unknown>, key = privateKey, kid = 'test-kid') {
+  const head = b64u(JSON.stringify({ alg: 'ES256', kid, typ: 'JWT' }));
+  const body = b64u(JSON.stringify({ aud: 'authenticated', role: 'authenticated', iss: 'http://realtime.test/auth/v1', exp: Math.floor(Date.now() / 1000) + 3600, ...claims }));
+  const sig = cryptoSign('sha256', Buffer.from(`${head}.${body}`), { key, dsaEncoding: 'ieee-p1363' });
+  return `${head}.${body}.${b64u(sig)}`;
+}
 import assert from 'node:assert/strict';
 
 // Capture outgoing Supabase broadcasts and Expo pushes instead of sending them.
@@ -14,6 +27,11 @@ let sent: Sent[] = [];
 const realFetch = globalThis.fetch;
 globalThis.fetch = (async (url: any, init: any) => {
   sent.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : null });
+  if (String(url).includes('/.well-known/jwks.json')) {
+    jwksFetches++;
+    return new Response(JSON.stringify({ keys: [jwk] }), { status: 200 });
+  }
+  if (String(url).includes('/auth/v1/user')) return new Response('{"msg":"should not be called"}', { status: 500 });
   if (String(url).includes('/auth/v1/admin/users')) {
     const { devUserId } = await import('../src/lib/devId.js');
     const email = JSON.parse(init.body).email;
@@ -169,4 +187,37 @@ test('security fixes', async () => {
   // A faked X-Forwarded-For is not trusted beyond the one proxy hop
   const ip = await app.inject({ method: 'GET', url: '/v1/health', headers: { 'x-forwarded-for': '1.2.3.4, 5.6.7.8' } });
   assert.equal(ip.headers['x-ratelimit-limit'], '300');
+});
+
+test('Supabase tokens are verified inside the API (no network call per request)', async () => {
+  const uid = '0b9f1c7e-1111-4222-8333-944455556666';
+  const good = makeToken({ sub: uid, phone: '919811112222' });
+  for (let i = 0; i < 3; i++) {
+    const r = await call('GET', '/v1/me', { authorization: `Bearer ${good}` });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.phone, '+919811112222');
+  }
+  assert.equal(jwksFetches, 1, 'keys fetched once and cached');
+  assert.equal(sent.filter((s) => s.url.includes('/auth/v1/user')).length, 0, 'no per-request call to Supabase');
+
+  // Forged, expired, wrong-audience tokens are refused
+  const { privateKey: otherKey } = generateKeyPairSync('ec', { namedCurve: 'P-256' });
+  assert.equal((await call('GET', '/v1/me', { authorization: `Bearer ${makeToken({ sub: uid }, otherKey)}` })).status, 401);
+  assert.equal((await call('GET', '/v1/me', { authorization: `Bearer ${makeToken({ sub: uid, exp: 1000 })}` })).status, 401);
+  assert.equal((await call('GET', '/v1/me', { authorization: `Bearer ${makeToken({ sub: uid, aud: 'anon' })}` })).status, 401);
+  assert.equal((await call('GET', '/v1/me', { authorization: `Bearer ${good.slice(0, -4)}AAAA` })).status, 401);
+  await pool.query(`delete from profiles where id = $1`, [uid]);
+});
+
+test('search finds dishes with their cafe, and cafes', async () => {
+  const r = await call('GET', '/v1/locations/spaze-tech-park/search?q=chai');
+  assert.equal(r.status, 200);
+  assert.ok(r.body.dishes.length > 0);
+  assert.ok(r.body.dishes.every((d: any) => /chai/i.test(d.name + d.description) && d.cafe?.name));
+  assert.ok(r.body.cafes.some((c: any) => /chai/i.test(c.name + c.cuisines)));
+  const veg = await call('GET', '/v1/locations/spaze-tech-park/search?q=a&veg=true&maxPrice=50');
+  assert.deepEqual(veg.body, { dishes: [], cafes: [] }); // under 2 characters
+  const cheap = await call('GET', '/v1/locations/spaze-tech-park/search?q=chai&maxPrice=30&veg=true');
+  assert.ok(cheap.body.dishes.every((d: any) => d.price <= 30 && d.isVeg));
+  assert.equal((await call('GET', `/v1/locations/spaze-tech-park/search?q=${encodeURIComponent("%_'")}`)).status, 200);
 });

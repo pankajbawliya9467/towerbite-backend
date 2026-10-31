@@ -4,6 +4,7 @@ import { one } from './db.js';
 import { supabase } from './supabase.js';
 import { devUserId } from './lib/devId.js';
 import { forbidden, unauthorized } from './lib/errors.js';
+import { InvalidToken, verifyLocally } from './lib/jwt.js';
 
 export type AuthUser = { id: string; phone: string | null; email: string | null };
 export type Staff = { userId: string; role: 'cafe_staff' | 'super_admin'; cafeId: string | null; name: string };
@@ -29,14 +30,34 @@ export async function requireUser(req: FastifyRequest): Promise<AuthUser> {
     return req.authUser;
   }
 
+  req.authUser = await userFromToken(token);
+  return req.authUser;
+}
+
+/** Tokens Supabase confirmed for us, kept briefly so the same token isn't checked over the network again. */
+const remoteCache = new Map<string, { user: AuthUser; until: number }>();
+
+const normPhone = (p?: string | null) => (p ? `+${p.replace(/^\+/, '')}` : null);
+
+async function userFromToken(token: string): Promise<AuthUser> {
+  // Fast path: check the signature here (no network call).
+  try {
+    const claims = await verifyLocally(token);
+    if (claims) return { id: claims.sub, phone: normPhone(claims.phone), email: claims.email || null };
+  } catch (e) {
+    if (e instanceof InvalidToken) throw unauthorized('Session expired, please log in again');
+    throw e;
+  }
+
+  // Fallback: ask Supabase (legacy HS256 tokens without SUPABASE_JWT_SECRET, or keys not reachable).
+  const hit = remoteCache.get(token);
+  if (hit && hit.until > Date.now()) return hit.user;
   const { data, error } = await supabase().auth.getUser(token);
   if (error || !data.user) throw unauthorized('Session expired, please log in again');
-  req.authUser = {
-    id: data.user.id,
-    phone: data.user.phone ? `+${data.user.phone.replace(/^\+/, '')}` : null,
-    email: data.user.email ?? null,
-  };
-  return req.authUser;
+  const user = { id: data.user.id, phone: normPhone(data.user.phone), email: data.user.email ?? null };
+  if (remoteCache.size > 5000) remoteCache.clear();
+  remoteCache.set(token, { user, until: Date.now() + 60_000 });
+  return user;
 }
 
 export async function getStaff(userId: string): Promise<Staff | undefined> {
