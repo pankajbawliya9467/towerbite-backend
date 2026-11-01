@@ -1,7 +1,7 @@
 import { q } from '../db.js';
 
 export const CAFE_COLS = `c.id, c.location_id as "locationId", c.slug, c.name, c.cuisines, c.place, c.emoji,
-  c.cover_color as "coverColor", c.image_url as "imageUrl", c.phone, c.rating::float as rating,
+  c.cover_color as "coverColor", c.image_url as "imageUrl", c.logo_url as "logoUrl", c.phone, c.rating::float as rating,
   c.rating_count as "ratingCount", c.eta_min as "etaMin", c.eta_max as "etaMax", c.is_open as "isOpen",
   c.accepting_orders as "acceptingOrders", c.tags, c.sort`;
 
@@ -23,7 +23,7 @@ const ORDER_SELECT = `
     o.note, o.rider_name as "riderName", o.reject_reason as "rejectReason",
     o.created_at as "createdAt", o.accepted_at as "acceptedAt", o.out_at as "outAt",
     o.delivered_at as "deliveredAt", o.cancelled_at as "cancelledAt", o.rejected_at as "rejectedAt",
-    json_build_object('id', c.id, 'slug', c.slug, 'name', c.name, 'emoji', c.emoji, 'coverColor', c.cover_color,
+    json_build_object('id', c.id, 'slug', c.slug, 'name', c.name, 'emoji', c.emoji, 'logoUrl', c.logo_url, 'coverColor', c.cover_color,
       'place', c.place, 'phone', c.phone, 'etaMin', c.eta_min, 'etaMax', c.eta_max) as cafe,
     json_build_object('id', l.id, 'slug', l.slug, 'name', l.name) as location,
     coalesce((select json_agg(json_build_object('id', oi.id, 'menuItemId', oi.menu_item_id, 'name', oi.name,

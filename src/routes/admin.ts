@@ -54,13 +54,13 @@ const RESOURCES: Record<string, Resource> = {
     table: 'cafes',
     cols: {
       locationId: 'location_id', slug: 'slug', name: 'name', cuisines: 'cuisines', place: 'place', emoji: 'emoji',
-      coverColor: 'cover_color', imageUrl: 'image_url', phone: 'phone', rating: 'rating', ratingCount: 'rating_count',
+      coverColor: 'cover_color', imageUrl: 'image_url', logoUrl: 'logo_url', phone: 'phone', rating: 'rating', ratingCount: 'rating_count',
       etaMin: 'eta_min', etaMax: 'eta_max', isOpen: 'is_open', acceptingOrders: 'accepting_orders', tags: 'tags', sort: 'sort',
     },
     shape: {
       locationId: uuid, slug, name: z.string().trim().min(2).max(80), cuisines: z.string().trim().max(120),
       place: z.string().trim().max(80), emoji: z.string().trim().max(8), coverColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-      imageUrl: url, phone: z.string().trim().max(20).nullable(), rating: z.number().min(0).max(5),
+      imageUrl: url, logoUrl: url, phone: z.string().trim().max(20).nullable(), rating: z.number().min(0).max(5),
       ratingCount: z.number().int().min(0), etaMin: z.number().int().min(1).max(120), etaMax: z.number().int().min(1).max(180),
       isOpen: z.boolean(), acceptingOrders: z.boolean(), tags: z.array(z.string().trim().toLowerCase().max(20)).max(10),
       sort: z.number().int(),
