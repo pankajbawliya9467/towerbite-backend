@@ -7,6 +7,7 @@ import { conflict, notFound } from '../lib/errors.js';
 import { cafesChanged, orderChanged } from '../realtime.js';
 import { pushToUser } from '../push.js';
 import { cafeWithMenu } from './public.js';
+import { pushTeamForOrder } from './team.js';
 
 type Transition = {
   from: OrderStatus;
@@ -105,6 +106,8 @@ export async function cafeRoutes(app: FastifyInstance) {
       const [title, text] = t.push({ orderNo: row.order_no, cafe: order.cafe.name, rider: order.riderName });
       // Sent in the background so the cafe's tap is answered straight away.
       void pushToUser(row.user_id, title, text, { orderId: req.params.id, status: t.to });
+      // Team orders: everyone who added items hears about it too, not just the host.
+      if (order.team) void pushTeamForOrder(req.params.id, row.user_id, title, text);
     }
     return order;
   });

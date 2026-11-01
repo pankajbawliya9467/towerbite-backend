@@ -28,7 +28,10 @@ const ORDER_SELECT = `
     json_build_object('id', l.id, 'slug', l.slug, 'name', l.name) as location,
     coalesce((select json_agg(json_build_object('id', oi.id, 'menuItemId', oi.menu_item_id, 'name', oi.name,
       'emoji', oi.emoji, 'price', oi.price, 'qty', oi.qty) order by oi.line_no, oi.name)
-      from order_items oi where oi.order_id = o.id), '[]') as items
+      from order_items oi where oi.order_id = o.id), '[]') as items,
+    (select json_build_object('code', t.code, 'name', t.name, 'deliverTo', t.deliver_to,
+       'people', (select count(distinct ti.user_id) from team_items ti where ti.team_id = t.id))
+     from team_orders t where t.order_id = o.id limit 1) as team
   from orders o
   join cafes c on c.id = o.cafe_id
   join locations l on l.id = o.location_id`;

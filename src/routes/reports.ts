@@ -123,14 +123,14 @@ export async function cafeReport(cafeId: string, rq: { from?: string; to?: strin
 }
 
 /** Quotes a value for CSV (Excel-safe: formulas are neutralised). */
-function cell(v: unknown) {
+export function cell(v: unknown) {
   let s = v === null || v === undefined ? '' : String(v);
   if (/^[=+\-@\t\r]/.test(s)) s = `'${s}`;
   return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
 }
-const csv = (rows: unknown[][]) => '﻿' + rows.map((r) => r.map(cell).join(',')).join('\r\n') + '\r\n';
+export const csv = (rows: unknown[][]) => '﻿' + rows.map((r) => r.map(cell).join(',')).join('\r\n') + '\r\n';
 
-function sendCsv(reply: FastifyReply, name: string, body: string) {
+export function sendCsv(reply: FastifyReply, name: string, body: string) {
   return reply
     .header('content-type', 'text/csv; charset=utf-8')
     .header('content-disposition', `attachment; filename="${name}"`)
