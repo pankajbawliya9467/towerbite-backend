@@ -44,6 +44,11 @@ export async function buildApp() {
       return reply.code(400).send({ error: `${i.path.join('.') || 'input'}: ${i.message}`, issues: err.issues });
     }
     // Postgres errors
+    // A table/column is missing: the database is older than this code (migration not run yet).
+    if (err.code === '42P01' || err.code === '42703') {
+      req.log.error(err);
+      return reply.code(503).send({ error: 'Server is updating its database. Please try again in a minute.' });
+    }
     if (err.code === '22P02') return reply.code(404).send({ error: 'Not found' });
     if (err.code === '23505') return reply.code(409).send({ error: 'That already exists (check the slug or name)' });
     if (err.code === '23514') return reply.code(400).send({ error: 'Please check the values (for example, min time must not be more than max time)' });
