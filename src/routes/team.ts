@@ -66,8 +66,8 @@ const isClosed = (t: TeamRow) => t.status === 'open' && t.closes_at.getTime() <=
 /** Everything the team screen shows, from `userId`'s point of view. */
 async function teamView(t: TeamRow, userId: string) {
   const [members, items, order] = await Promise.all([
-    q<{ user_id: string; name: string; note: string | null; paid_at: Date | null }>(
-      `select user_id, name, note, paid_at from team_members where team_id = $1
+    q<{ user_id: string; name: string; note: string | null; paid_at: Date | null; claimed_at: Date | null }>(
+      `select user_id, name, note, paid_at, claimed_at from team_members where team_id = $1
        order by (user_id = $2) desc, joined_at`,
       [t.id, t.host_id],
     ),
@@ -98,6 +98,8 @@ async function teamView(t: TeamRow, userId: string) {
       // What this person owes the host (nothing when the host is paying for everyone).
       owes: isHost || t.pay_mode === 'host' ? 0 : amount,
       paid: isHost || t.pay_mode === 'host' || !!m.paid_at,
+      /** Said "I paid"; waits for the host to confirm. */
+      claimed: !m.paid_at && !!m.claimed_at,
     };
   });
   const withItems = people.filter((p) => p.items.length);
@@ -160,13 +162,14 @@ export async function teamRoutes(app: FastifyInstance) {
       [user.id],
     );
     if (!profile?.tower || !profile.floor) throw badRequest('Add your tower and floor first (Profile → Desk address)');
-    const open = await one<{ n: number }>(
-      `select count(*)::int as n from team_orders where host_id = $1 and status = 'open' and created_at > now() - interval '1 day'`,
-      [user.id],
-    );
-    if (open!.n >= MAX_OPEN_PER_HOST) throw tooMany('You already have 3 open team orders. Place or cancel one first.');
-
     const code = await tx(async (c) => {
+      // Checked under a per-user lock, so parallel requests can't get past the limit.
+      await c.query(`select pg_advisory_xact_lock(hashtext($1))`, [`team:${user.id}`]);
+      const { rows: [open] } = await c.query(
+        `select count(*)::int as n from team_orders where host_id = $1 and status = 'open' and created_at > now() - interval '1 day'`,
+        [user.id],
+      );
+      if (open.n >= MAX_OPEN_PER_HOST) throw tooMany('You already have 3 open team orders. Place or cancel one first.');
       for (let attempt = 0; attempt < 5; attempt++) {
         const code = newCode();
         const { rows } = await c.query(
@@ -298,21 +301,30 @@ export async function teamRoutes(app: FastifyInstance) {
     return teamView(await teamByCode(t.code), user.id);
   });
 
-  /** Marks a share as paid: your own, or (host only) anyone's. */
+  /**
+   * Teammate: "I paid" (a claim the host sees). Host: confirms (or undoes) anyone's payment;
+   * only the host's confirmation counts as collected, since the host is the one being paid.
+   */
   app.post<{ Params: { code: string } }>('/v1/team-orders/:code/paid', async (req) => {
     const user = await requireUser(req);
     const body = z.object({ userId: z.string().uuid().optional(), paid: z.boolean().default(true) }).parse(req.body ?? {});
     const t = await teamByCode(req.params.code.toUpperCase());
     const target = body.userId ?? user.id;
-    // Only the host can mark someone else's share as paid or unpaid (the host is the one being paid).
-    if (target !== user.id && t.host_id !== user.id) throw forbidden('Only the host can change someone else\'s payment');
-    if (target === user.id && !body.paid && t.host_id !== user.id) throw forbidden('Ask the host to change this');
+    const isHost = t.host_id === user.id;
+    if (target !== user.id && !isHost) throw forbidden('Only the host can change someone else\'s payment');
     if (t.status !== 'placed') throw conflict('The team order is not placed yet');
-    const row = await one(
-      `update team_members set paid_at = case when $3 then coalesce(paid_at, now()) else null end
-       where team_id = $1 and user_id = $2 returning user_id`,
-      [t.id, target, body.paid],
-    );
+    const row = isHost
+      ? await one(
+          `update team_members set paid_at = case when $3 then coalesce(paid_at, now()) else null end,
+             claimed_at = case when $3 then claimed_at else null end
+           where team_id = $1 and user_id = $2 returning user_id`,
+          [t.id, target, body.paid],
+        )
+      : await one(
+          `update team_members set claimed_at = case when $3 then coalesce(claimed_at, now()) else null end
+           where team_id = $1 and user_id = $2 returning user_id`,
+          [t.id, target, body.paid],
+        );
     if (!row) throw notFound('Not in this team order');
     return teamView(await teamByCode(t.code), user.id);
   });
@@ -326,6 +338,7 @@ export async function teamRoutes(app: FastifyInstance) {
     const view = await teamView(t, user.id);
     const person = view.people.find((p) => p.userId === userId);
     if (!person || person.paid || !person.owes) throw conflict('Nothing to remind about');
+    if (person.claimed) throw conflict(`${person.name} says they paid. Confirm it if you got the money.`);
     const row = await one(
       `update team_members set reminded_at = now()
        where team_id = $1 and user_id = $2 and (reminded_at is null or reminded_at < now() - interval '10 minutes')

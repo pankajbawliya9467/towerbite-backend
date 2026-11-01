@@ -81,7 +81,8 @@ export async function createOrder(input: {
 
   const profile = await one<{ name: string; phone: string | null }>(`select name, phone from profiles where id = $1`, [user.id]);
   const customerName = input.name || profile?.name || '';
-  const customerPhone = input.phone || profile?.phone || user.phone;
+  // Always the verified login number, so nobody can put someone else's phone on an order.
+  const customerPhone = user.phone ?? profile?.phone ?? null;
 
   const orderId = await tx(async (c) => {
     // One order at a time per user: parallel requests wait here, so the limits below can't be skipped.

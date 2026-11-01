@@ -70,7 +70,7 @@ const LunchInput = z
 const BookInput = z.object({
   lunchId: z.string().uuid(),
   slot: z.string().regex(SLOT),
-  qty: z.number().int().min(1).max(5),
+  qty: z.number().int().min(1).max(3),
   address: z.object({
     tower: z.string().trim().min(1).max(40),
     floor: z.string().trim().min(1).max(20),
@@ -135,7 +135,9 @@ export async function lunchRoutes(app: FastifyInstance) {
     const profile = await one<{ name: string; phone: string | null }>(`select name, phone from profiles where id = $1`, [user.id]);
 
     const { id, cafeId } = await tx(async (c) => {
-      // Lock the lunch so two people can't both take the last plate.
+      // One booking at a time per person (so the limits below can't be raced), and lock the lunch
+      // so two people can't both take the last plate.
+      await c.query(`select pg_advisory_xact_lock(hashtext($1))`, [`lunch:${user.id}`]);
       const { rows: [l] } = await c.query(
         `select l.id, l.cafe_id, l.day, l.price, l.plates, l.slots, l.name,
            (l.is_active and (l.day + l.closes_at) > ${NOW}) as bookable,
@@ -148,13 +150,16 @@ export async function lunchRoutes(app: FastifyInstance) {
       if (!l.slots.includes(body.slot)) throw badRequest('Pick one of the delivery times');
       if (l.booked + body.qty > l.plates) throw conflict(l.plates - l.booked > 0 ? `Only ${l.plates - l.booked} plates left` : 'Sold out');
       const { rows: [mine] } = await c.query(
-        `select count(*) filter (where lunch_id = $2)::int as same,
-           count(*) filter (where day >= ${TODAY})::int as upcoming
-         from lunch_bookings where user_id = $1 and status <> 'cancelled'`,
+        `select count(*) filter (where lunch_id = $2 and status <> 'cancelled')::int as same,
+           count(*) filter (where day >= ${TODAY} and status <> 'cancelled')::int as upcoming,
+           count(*) filter (where status = 'cancelled' and cancelled_at > now() - interval '7 days')::int as cancels
+         from lunch_bookings where user_id = $1`,
         [user.id, l.id],
       );
       if (mine.same) throw conflict('You already booked this lunch. Cancel it first to change it.');
       if (mine.upcoming >= 10) throw tooMany('You can have up to 10 upcoming lunch bookings');
+      // Stops someone booking up all the plates and cancelling at the last minute again and again.
+      if (mine.cancels >= 5) throw tooMany('Too many cancelled lunch bookings this week. Please try again later.');
       const { rows: [row] } = await c.query(
         `insert into lunch_bookings (lunch_id, cafe_id, user_id, day, slot, qty, price, total,
            customer_name, customer_phone, tower, floor, company, desk, note)
@@ -254,13 +259,17 @@ export async function lunchRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>('/v1/cafe/lunch/:id', async (req) => {
     const { cafeId } = await requireCafe(req);
-    const booked = await one<{ n: number }>(
-      `select count(*)::int as n from lunch_bookings where lunch_id = $1 and status <> 'cancelled'`,
-      [req.params.id],
+    // One statement, so a booking made at the same moment can't be deleted along with the lunch.
+    const row = await one(
+      `delete from lunch_menus l where l.id = $1 and l.cafe_id = $2
+         and not exists (select 1 from lunch_bookings b where b.lunch_id = l.id and b.status <> 'cancelled')
+       returning id`,
+      [req.params.id, cafeId],
     );
-    if (booked!.n) throw conflict('People have booked this lunch. Stop bookings instead of deleting it.');
-    const row = await one(`delete from lunch_menus where id = $1 and cafe_id = $2 returning id`, [req.params.id, cafeId]);
-    if (!row) throw notFound('Lunch not found');
+    if (!row) {
+      const exists = await one(`select 1 from lunch_menus where id = $1 and cafe_id = $2`, [req.params.id, cafeId]);
+      throw exists ? conflict('People have booked this lunch. Stop bookings instead of deleting it.') : notFound('Lunch not found');
+    }
     await locationChanged(cafeId);
     return { ok: true };
   });
@@ -305,8 +314,8 @@ export async function lunchRoutes(app: FastifyInstance) {
 
   app.post<{ Params: { id: string; action: string } }>('/v1/cafe/lunch/bookings/:id/:action', async (req) => {
     const { cafeId } = await requireCafe(req);
+    if (!Object.hasOwn(ACTIONS, req.params.action)) throw notFound('Unknown action');
     const a = ACTIONS[req.params.action as keyof typeof ACTIONS];
-    if (!a) throw notFound('Unknown action');
     const row = await one<{ user_id: string }>(
       `update lunch_bookings set status = '${a.to}', ${a.set}
        where id = $1 and cafe_id = $2 and status = any($3) returning user_id`,

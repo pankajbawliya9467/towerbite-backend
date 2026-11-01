@@ -69,7 +69,9 @@ export async function meRoutes(app: FastifyInstance) {
       .parse(req.body);
     await q(
       `insert into push_tokens (token, user_id, platform) values ($1, $2, $3)
-       on conflict (token) do update set user_id = excluded.user_id`,
+       on conflict (token) do update set user_id = excluded.user_id
+       -- a token stays with its user until they sign out (which deletes it), so it can't be taken over
+       where push_tokens.user_id = excluded.user_id or push_tokens.created_at < now() - interval '30 days'`,
       [token, user.id, platform],
     );
     return { ok: true };

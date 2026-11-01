@@ -85,8 +85,8 @@ export async function cafeRoutes(app: FastifyInstance) {
 
   app.post<{ Params: { id: string; action: string } }>('/v1/cafe/orders/:id/:action', async (req) => {
     const { cafeId } = await requireCafe(req);
+    if (!Object.hasOwn(TRANSITIONS, req.params.action)) throw notFound('Unknown action');
     const t = TRANSITIONS[req.params.action];
-    if (!t) throw notFound('Unknown action');
     const body = z
       .object({ reason: z.string().trim().max(120).optional(), riderName: z.string().trim().max(40).optional() })
       .parse(req.body ?? {});

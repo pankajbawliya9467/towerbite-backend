@@ -14,6 +14,7 @@ import { adminRoutes } from './routes/admin.js';
 import { reportRoutes } from './routes/reports.js';
 import { lunchRoutes } from './routes/lunch.js';
 import { teamRoutes } from './routes/team.js';
+import { notifyRoutes } from './routes/notify.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -66,5 +67,6 @@ export async function buildApp() {
   await app.register(reportRoutes);
   await app.register(lunchRoutes);
   await app.register(teamRoutes);
+  await app.register(notifyRoutes);
   return app;
 }

@@ -190,8 +190,11 @@ test('team order: host shares a code, teammates add, host places one order, bill
   const arjunId = view.body.people.find((p: any) => p.name === 'Arjun').userId;
   assert.equal((await call('POST', `/v1/team-orders/${code}/paid`, neha, { userId: arjunId })).status, 403, 'only host marks others');
   const paid = await call('POST', `/v1/team-orders/${code}/paid`, neha, {});
-  assert.equal(paid.body.me.paid, true);
-  assert.equal((await call('POST', `/v1/team-orders/${code}/remind`, host, { userId: nehaId })).status, 409, 'already paid');
+  assert.equal(paid.body.me.paid, false, 'a teammate can only claim; the host confirms');
+  assert.equal(paid.body.me.claimed, true);
+  assert.equal(paid.body.collected, 0);
+  assert.equal((await call('POST', `/v1/team-orders/${code}/remind`, host, { userId: nehaId })).status, 409, 'says paid: confirm instead');
+  assert.equal((await call('POST', `/v1/team-orders/${code}/paid`, host, { userId: nehaId })).body.people.find((p: any) => p.userId === nehaId).paid, true);
   assert.equal((await call('POST', `/v1/team-orders/${code}/remind`, host, { userId: arjunId })).status, 200);
   assert.equal((await call('POST', `/v1/team-orders/${code}/remind`, host, { userId: arjunId })).status, 429, 'not spammy');
   const hostMarks = await call('POST', `/v1/team-orders/${code}/paid`, host, { userId: arjunId });
@@ -205,4 +208,28 @@ test('team order: host shares a code, teammates add, host places one order, bill
   assert.equal((await call('POST', `/v1/team-orders/${t2.body.code}/cancel`, neha)).status, 403);
   assert.equal((await call('POST', `/v1/team-orders/${t2.body.code}/cancel`, host)).body.status, 'cancelled');
   assert.equal((await call('POST', `/v1/team-orders/${t2.body.code}/place`, host)).status, 409);
+});
+
+test('admin sends a custom notification to a building, a company or one person; nobody else can', async () => {
+  const admin = H('admin@towerbites.dev');
+  const emp = await employee(31, 'Kiran');
+  const loc = (await pool.query(`select id from locations where slug = 'spaze-tech-park'`)).rows[0];
+  const body = { title: 'Diwali offer', body: 'Free sweet with every order today', audience: { type: 'location', locationId: loc.id } };
+  assert.equal((await call('POST', '/v1/admin/notifications', emp, body)).status, 403, 'employees cannot send');
+  assert.equal((await call('POST', '/v1/admin/notifications', cafeStaff, body)).status, 403, 'cafe staff cannot send');
+  const preview = await call('POST', '/v1/admin/notifications/preview', admin, { audience: body.audience });
+  assert.equal(preview.status, 200, JSON.stringify(preview.body));
+  assert.ok(preview.body.users >= 1);
+  sent = [];
+  const res = await call('POST', '/v1/admin/notifications', admin, body);
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  await settle();
+  assert.ok(pushes().some((p) => p.title === 'Diwali offer' && p.to === `ExponentPushToken[test-${n}-31]`));
+  const one = await call('POST', '/v1/admin/notifications/preview', admin, { audience: { type: 'user', phone: phone(31).slice(3) } });
+  assert.equal(one.body.users, 1);
+  assert.match(one.body.label, /Kiran/);
+  assert.equal((await call('POST', '/v1/admin/notifications', admin, { ...body, audience: { type: 'user', phone: '9000000000' } })).status, 400, 'nobody to send to');
+  assert.equal((await call('POST', '/v1/admin/notifications', admin, { ...body, title: '' })).status, 400);
+  const history = await call('GET', '/v1/admin/notifications', admin);
+  assert.equal(history.body[0].title, 'Diwali offer');
 });
