@@ -6,13 +6,18 @@ import { ACTIVE_STATUSES, selectOrder, selectOrders } from '../lib/sql.js';
 import { badRequest, conflict, forbidden, notFound, tooMany } from '../lib/errors.js';
 import { env } from '../env.js';
 import { orderChanged } from '../realtime.js';
+import { cafeCombos, comboDetail } from '../lib/combos.js';
 
 const PlaceOrder = z.object({
   cafeId: z.string().uuid(),
   items: z
     .array(z.object({ menuItemId: z.string().uuid(), qty: z.number().int().min(1).max(20) }))
-    .min(1)
-    .max(30),
+    .max(30)
+    .default([]),
+  combos: z
+    .array(z.object({ comboId: z.string().uuid(), qty: z.number().int().min(1).max(10) }))
+    .max(10)
+    .default([]),
   address: z.object({
     tower: z.string().trim().min(1).max(40),
     floor: z.string().trim().min(1).max(20),
@@ -48,6 +53,7 @@ export async function createOrder(input: {
   user: AuthUser;
   cafeId: string;
   items: { menuItemId: string; qty: number }[];
+  combos?: { comboId: string; qty: number }[];
   address: Address;
   name?: string;
   phone?: string;
@@ -67,16 +73,31 @@ export async function createOrder(input: {
   const qtyById = new Map<string, number>();
   for (const it of input.items) qtyById.set(it.menuItemId, (qtyById.get(it.menuItemId) ?? 0) + it.qty);
   const ids = [...qtyById.keys()];
-  const menu = await q<{ id: string; name: string; emoji: string; price: number; is_available: boolean }>(
-    `select id, name, emoji, price, is_available from menu_items where cafe_id = $1 and id = any($2::uuid[])`,
-    [cafe.id, ids],
-  );
+  const menu = ids.length
+    ? await q<{ id: string; name: string; emoji: string; price: number; is_available: boolean }>(
+        `select id, name, emoji, price, is_available from menu_items where cafe_id = $1 and id = any($2::uuid[])`,
+        [cafe.id, ids],
+      )
+    : [];
   if (menu.length !== ids.length) throw badRequest('Some items are not on this cafe\'s menu');
   const unavailable = menu.filter((m) => !m.is_available);
   if (unavailable.length) throw conflict(`${unavailable.map((m) => m.name).join(', ')} is out of stock`);
 
-  const lines = ids.map((id) => ({ ...menu.find((m) => m.id === id)!, qty: qtyById.get(id)! }));
+  // Combos: priced and checked (time, day, stock) on the server too.
+  const comboQty = new Map<string, number>();
+  for (const it of input.combos ?? []) comboQty.set(it.comboId, (comboQty.get(it.comboId) ?? 0) + it.qty);
+  const combos = comboQty.size ? (await cafeCombos(cafe.id, true)).filter((x) => comboQty.has(x.id)) : [];
+  if (combos.length !== comboQty.size) throw badRequest('This combo is not on this cafe\'s menu any more');
+  const offCombo = combos.find((x) => !x.availableNow);
+  if (offCombo) throw conflict(`${offCombo.name} is not available right now`);
+  if (!ids.length && !combos.length) throw badRequest('Your cart is empty');
+
+  const lines = [
+    ...ids.map((id) => ({ ...menu.find((m) => m.id === id)!, qty: qtyById.get(id)!, comboId: null as string | null, detail: null as string | null })),
+    ...combos.map((x) => ({ id: null as string | null, name: x.name, emoji: x.emoji, price: x.price, qty: comboQty.get(x.id)!, comboId: x.id, detail: comboDetail(x.items) })),
+  ];
   const itemsTotal = lines.reduce((s, l) => s + l.price * l.qty, 0);
+  const savings = combos.reduce((s, x) => s + Math.max(0, x.mrp - x.price) * comboQty.get(x.id)!, 0);
   const deliveryFee = 0;
 
   const profile = await one<{ name: string; phone: string | null }>(`select name, phone from profiles where id = $1`, [user.id]);
@@ -98,16 +119,17 @@ export async function createOrder(input: {
 
     const { rows } = await c.query(
       `insert into orders (user_id, cafe_id, location_id, items_total, delivery_fee, total,
-         customer_name, customer_phone, tower, floor, company, desk, note)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) returning id`,
+         customer_name, customer_phone, tower, floor, company, desk, note, savings)
+       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id`,
       [user.id, cafe.id, cafe.location_id, itemsTotal, deliveryFee, itemsTotal + deliveryFee, customerName,
-        customerPhone, address.tower, address.floor, address.company, address.desk, input.note ?? null],
+        customerPhone, address.tower, address.floor, address.company, address.desk, input.note ?? null, savings],
     );
     const id = rows[0].id as string;
     for (const [lineNo, l] of lines.entries()) {
       await c.query(
-        `insert into order_items (order_id, menu_item_id, name, emoji, price, qty, line_no) values ($1,$2,$3,$4,$5,$6,$7)`,
-        [id, l.id, l.name, l.emoji, l.price, l.qty, lineNo],
+        `insert into order_items (order_id, menu_item_id, name, emoji, price, qty, line_no, combo_id, detail)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+        [id, l.id, l.name, l.emoji, l.price, l.qty, lineNo, l.comboId, l.detail],
       );
     }
     // Remember the desk address (and name) for next time.

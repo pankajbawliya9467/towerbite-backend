@@ -233,3 +233,97 @@ test('admin sends a custom notification to a building, a company or one person; 
   const history = await call('GET', '/v1/admin/notifications', admin);
   assert.equal(history.body[0].title, 'Diwali offer');
 });
+
+test('sub-categories: one level, same cafe, and the menu sends parentId', async () => {
+  const admin = H('admin@towerbites.dev');
+  const cafes = (await call('GET', '/v1/admin/cafes', admin)).body as { id: string }[];
+  const [a, b] = cafes;
+  const snacks = (await call('POST', '/v1/admin/categories', admin, { cafeId: a.id, name: 'Snacks T', sort: 50 })).body;
+  const burgers = await call('POST', '/v1/admin/categories', admin, { cafeId: a.id, parentId: snacks.id, name: 'Burgers T', sort: 1 });
+  assert.equal(burgers.status, 201);
+  assert.equal(burgers.body.parentId, snacks.id);
+  assert.equal((await call('POST', '/v1/admin/categories', admin, { cafeId: a.id, parentId: burgers.body.id, name: 'Deep' })).status, 400, 'only one level');
+  assert.equal((await call('POST', '/v1/admin/categories', admin, { cafeId: b.id, parentId: snacks.id, name: 'Other cafe' })).status, 400, 'parent in another cafe');
+  assert.equal((await call('PATCH', `/v1/admin/categories/${snacks.id}`, admin, { parentId: burgers.body.id })).status, 400, 'a parent cannot become a sub');
+  assert.equal((await call('PATCH', `/v1/admin/categories/${snacks.id}`, admin, { parentId: snacks.id })).status, 400, 'not inside itself');
+  const otherCat = (await call('POST', '/v1/admin/categories', admin, { cafeId: b.id, name: 'B cat' })).body;
+  assert.equal((await call('POST', '/v1/admin/menu-items', admin, { cafeId: a.id, categoryId: otherCat.id, name: 'X', price: 10 })).status, 400, 'item category from another cafe');
+  const item = await call('POST', '/v1/admin/menu-items', admin, { cafeId: a.id, categoryId: burgers.body.id, name: 'Aloo Tikki Burger T', price: 60 });
+  assert.equal(item.status, 201);
+  const menu = (await call('GET', `/v1/cafes/${a.id}`)).body as { categories: { id: string; parentId: string | null }[] };
+  assert.equal(menu.categories.find((c) => c.id === burgers.body.id)?.parentId, snacks.id);
+  // deleting the parent keeps the sub as a main category
+  assert.equal((await call('DELETE', `/v1/admin/categories/${snacks.id}`, admin)).status, 200);
+  const after = (await call('GET', `/v1/admin/categories/${burgers.body.id}`, admin)).body;
+  assert.equal(after.parentId, null);
+  await call('DELETE', `/v1/admin/menu-items/${item.body.id}`, admin);
+  await call('DELETE', `/v1/admin/categories/${burgers.body.id}`, admin);
+  await call('DELETE', `/v1/admin/categories/${otherCat.id}`, admin);
+});
+
+test('combos: cafe builds one, customer orders it at the combo price, then rates the delivered order', async () => {
+  const cafe = (await call('GET', '/v1/cafe', cafeStaff)).body;
+  const menu = (await call('GET', `/v1/cafes/${cafe.id}`)).body;
+  const [x, y] = menu.items.filter((i: any) => i.isAvailable);
+  const mrp = x.price * 2 + y.price;
+  const body = { name: `Test combo ${n}`, price: mrp - 10, items: [{ menuItemId: x.id, qty: 2 }, { menuItemId: y.id, qty: 1 }] };
+
+  assert.equal((await call('POST', '/v1/cafe/combos', H(phone(60)), body)).status, 403, 'employees cannot make combos');
+  assert.equal((await call('POST', '/v1/cafe/combos', cafeStaff, { ...body, price: mrp + 1 })).status, 400, 'not more than the items');
+  assert.equal((await call('POST', '/v1/cafe/combos', cafeStaff, { ...body, items: [{ menuItemId: x.id, qty: 1 }] })).status, 400, 'needs two things');
+  assert.equal((await call('POST', '/v1/cafe/combos', cafeStaff, { ...body, startTime: '16:00' })).status, 400, 'both times');
+  const made = await call('POST', '/v1/cafe/combos', cafeStaff, body);
+  assert.equal(made.status, 201, JSON.stringify(made.body));
+  assert.equal(made.body.mrp, mrp);
+  assert.equal(made.body.availableNow, true);
+
+  const pub = (await call('GET', `/v1/cafes/${cafe.id}`)).body;
+  assert.ok(pub.combos.some((c: any) => c.id === made.body.id), 'customers see it');
+
+  const emp = await employee(61, 'Combo Fan');
+  const order = await call('POST', '/v1/orders', emp, { cafeId: cafe.id, combos: [{ comboId: made.body.id, qty: 2 }], items: [{ menuItemId: y.id, qty: 1 }], address });
+  assert.equal(order.status, 201, JSON.stringify(order.body));
+  assert.equal(order.body.total, (mrp - 10) * 2 + y.price);
+  assert.equal(order.body.savings, 20);
+  const line = order.body.items.find((i: any) => i.comboId === made.body.id);
+  assert.equal(line.name, body.name);
+  assert.match(line.detail, /2× /);
+
+  // Switched off → can't be ordered
+  await call('PATCH', `/v1/cafe/combos/${made.body.id}`, cafeStaff, { isActive: false });
+  assert.equal((await call('POST', '/v1/orders', emp, { cafeId: cafe.id, combos: [{ comboId: made.body.id, qty: 1 }], address })).status, 400);
+  // Outside its hours → not available now
+  const hour = new Date(Date.now() + 5.5 * 3600_000).getUTCHours();
+  const off = `${String((hour + 3) % 24).padStart(2, '0')}:00`, off2 = `${String((hour + 4) % 24).padStart(2, '0')}:00`;
+  const timed = await call('PATCH', `/v1/cafe/combos/${made.body.id}`, cafeStaff, { ...body, isActive: true, startTime: off, endTime: off2 });
+  assert.equal(timed.body.availableNow, false);
+  assert.equal((await call('POST', '/v1/orders', emp, { cafeId: cafe.id, combos: [{ comboId: made.body.id, qty: 1 }], address })).status, 409);
+
+  // Rating: only after delivery, once, own order only
+  const id = order.body.id;
+  assert.equal((await call('POST', `/v1/orders/${id}/rating`, emp, { stars: 5 })).status, 409, 'not delivered yet');
+  for (const step of ['accept', 'dispatch', 'deliver']) await call('POST', `/v1/cafe/orders/${id}/${step}`, cafeStaff, { riderName: 'Raju' });
+  await settle();
+  assert.ok(pushes().some((p: any) => p.data?.rate === '1'), 'delivered push asks for a rating');
+  assert.equal((await call('POST', `/v1/orders/${id}/rating`, H(phone(62)), { stars: 5 })).status, 404, 'someone else');
+  const before = (await call('GET', `/v1/cafes/${cafe.id}`)).body.ratingCount;
+  const rated = await call('POST', `/v1/orders/${id}/rating`, emp, { stars: 2, tags: ['cold', 'late', 'nonsense'], comment: 'Chai was cold', items: { [y.id]: false } });
+  assert.equal(rated.status, 201, JSON.stringify(rated.body));
+  assert.deepEqual(rated.body.tags, ['cold', 'late']);
+  assert.equal((await call('POST', `/v1/orders/${id}/rating`, emp, { stars: 5 })).status, 409, 'only once');
+  assert.equal((await call('GET', `/v1/cafes/${cafe.id}`)).body.ratingCount, before + 1);
+  assert.equal((await call('GET', `/v1/orders/${id}`, emp)).body.rating.stars, 2);
+
+  const report = await call('GET', '/v1/cafe/ratings?days=7', cafeStaff);
+  assert.equal(report.status, 200);
+  assert.ok(report.body.low >= 1);
+  const row = report.body.list.find((r: any) => r.orderId === id);
+  assert.equal(row.firstName, 'Combo');
+  assert.equal(row.comment, 'Chai was cold');
+  assert.equal((await call('GET', '/v1/cafe/ratings', H(phone(61)))).status, 403);
+
+  const sorry = await call('POST', `/v1/cafe/ratings/${id}/sorry`, cafeStaff, { message: 'Sorry about the cold chai, next one is on us!' });
+  assert.equal(sorry.status, 200);
+  assert.equal((await call('POST', `/v1/cafe/ratings/${id}/sorry`, cafeStaff, { message: 'Again sorry!!' })).status, 409, 'once');
+  await call('DELETE', `/v1/cafe/combos/${made.body.id}`, cafeStaff);
+});

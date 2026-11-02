@@ -32,6 +32,8 @@ type Resource = {
   /** query params allowed as filters (api field names) */
   filters?: string[];
   order: string;
+  /** extra checks before insert/update (body is the parsed, partial body; id is set on update) */
+  check?: (body: Record<string, unknown>, id?: string) => Promise<void>;
 };
 
 const RESOURCES: Record<string, Resource> = {
@@ -71,11 +73,12 @@ const RESOURCES: Record<string, Resource> = {
   },
   categories: {
     table: 'categories',
-    cols: { cafeId: 'cafe_id', name: 'name', sort: 'sort' },
-    shape: { cafeId: uuid, name: z.string().trim().min(1).max(40), sort: z.number().int() },
+    cols: { cafeId: 'cafe_id', parentId: 'parent_id', name: 'name', sort: 'sort' },
+    shape: { cafeId: uuid, parentId: uuid.nullable(), name: z.string().trim().min(1).max(40), sort: z.number().int() },
     required: ['cafeId', 'name'],
     filters: ['cafeId'],
     order: 'sort, name',
+    check: checkCategory,
   },
   'menu-items': {
     table: 'menu_items',
@@ -91,8 +94,34 @@ const RESOURCES: Record<string, Resource> = {
     required: ['cafeId', 'name', 'price'],
     filters: ['cafeId', 'categoryId'],
     order: 'sort, name',
+    check: checkItemCategory,
   },
 };
+
+/** A sub-category must sit under a top-level category of the same cafe (one level only). */
+async function checkCategory(body: Record<string, unknown>, id?: string) {
+  if (body.cafeId !== undefined && id) throw badRequest('A category cannot move to another cafe');
+  const parentId = body.parentId as string | null | undefined;
+  if (!parentId) return;
+  if (parentId === id) throw badRequest('A category cannot be inside itself');
+  const cafeId = (body.cafeId as string | undefined) ?? (await one<{ cafe_id: string }>(`select cafe_id from categories where id = $1`, [id]))?.cafe_id;
+  const parent = await one<{ cafe_id: string; parent_id: string | null }>(`select cafe_id, parent_id from categories where id = $1`, [parentId]);
+  if (!parent || parent.cafe_id !== cafeId) throw badRequest('Parent category not found in this cafe');
+  if (parent.parent_id) throw badRequest('Pick a main category as the parent (sub-categories cannot have their own sub-categories)');
+  if (id && (await one(`select 1 from categories where parent_id = $1 limit 1`, [id]))) {
+    throw badRequest('This category has sub-categories, so it cannot become a sub-category');
+  }
+}
+
+/** An item's category must belong to the item's cafe. */
+async function checkItemCategory(body: Record<string, unknown>, id?: string) {
+  const categoryId = body.categoryId as string | null | undefined;
+  if (body.cafeId !== undefined && id) throw badRequest('An item cannot move to another cafe');
+  if (!categoryId) return;
+  const cafeId = (body.cafeId as string | undefined) ?? (await one<{ cafe_id: string }>(`select cafe_id from menu_items where id = $1`, [id]))?.cafe_id;
+  const cat = await one(`select 1 from categories where id = $1 and cafe_id = $2`, [categoryId, cafeId]);
+  if (!cat) throw badRequest('Category not found in this cafe');
+}
 
 /** The location a row belongs to, so open apps/websites there can be told to re-load. */
 async function locationOf(name: string, id: string): Promise<string | null> {
@@ -144,6 +173,7 @@ export async function adminRoutes(app: FastifyInstance) {
       await requireAdmin(req);
       const body = partial.parse(req.body) as Record<string, unknown>;
       for (const k of r.required) if (body[k] === undefined) throw badRequest(`${k} is required`);
+      await r.check?.(body);
       const keys = Object.keys(body).filter((k) => body[k] !== undefined);
       const row = await one(
         `insert into ${r.table} (${keys.map((k) => r.cols[k]).join(', ')})
@@ -160,6 +190,7 @@ export async function adminRoutes(app: FastifyInstance) {
       const body = partial.parse(req.body) as Record<string, unknown>;
       const keys = Object.keys(body).filter((k) => body[k] !== undefined);
       if (keys.length) {
+        await r.check?.(body, req.params.id);
         const before = await locationOf(name, req.params.id);
         const row = await one(
           `update ${r.table} set ${keys.map((k, i) => `${r.cols[k]} = $${i + 2}`).join(', ')} where id = $1 returning id`,

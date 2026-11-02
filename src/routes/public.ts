@@ -2,20 +2,33 @@ import type { FastifyInstance } from 'fastify';
 import { q, one } from '../db.js';
 import { CAFE_COLS, ITEM_COLS } from '../lib/sql.js';
 import { notFound } from '../lib/errors.js';
+import { cafeCombos } from '../lib/combos.js';
 
 export async function cafeWithMenu(cafeId: string, includeUnavailable = true) {
   // Three independent reads in parallel (one round trip to the database instead of three).
-  const [cafe, categories, items] = await Promise.all([
+  const [cafe, categories, items, combos, likes] = await Promise.all([
     one(`select ${CAFE_COLS} from cafes c where c.id = $1`, [cafeId]),
-    q(`select id, name, sort from categories where cafe_id = $1 order by sort, name`, [cafeId]),
+    q(`select id, name, sort, parent_id as "parentId" from categories where cafe_id = $1 order by sort, name`, [cafeId]),
     q(
       `select ${ITEM_COLS} from menu_items i where i.cafe_id = $1 ${includeUnavailable ? '' : 'and i.is_available'}
        order by i.sort, i.name`,
       [cafeId],
     ),
+    cafeCombos(cafeId, true),
+    // "92% liked" from thumbs up/down after delivery (last 90 days)
+    q<{ id: string; liked: number; total: number }>(
+      `select ri.menu_item_id as id, count(*) filter (where ri.liked)::int as liked, count(*)::int as total
+       from rating_items ri join menu_items i on i.id = ri.menu_item_id
+       where i.cafe_id = $1 and ri.created_at > now() - interval '90 days' group by 1`,
+      [cafeId],
+    ),
   ]);
   if (!cafe) throw notFound('Cafe not found');
-  return { ...cafe, categories, items };
+  const withLikes = (items as { id: string }[]).map((i) => {
+    const l = likes.find((x) => x.id === i.id);
+    return l && l.total >= 3 ? { ...i, likePct: Math.round((l.liked / l.total) * 100), likeCount: l.total } : i;
+  });
+  return { ...cafe, categories, items: withLikes, combos };
 }
 
 export async function publicRoutes(app: FastifyInstance) {

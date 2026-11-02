@@ -31,7 +31,7 @@ const TRANSITIONS: Record<string, Transition> = {
   },
   deliver: {
     from: 'out_for_delivery', to: 'delivered', set: 'delivered_at = now(), cod_collected = true',
-    push: (o) => ['Delivered', `Enjoy your order from ${o.cafe}!`],
+    push: (o) => ['Delivered! How was it?', `Enjoy your order from ${o.cafe}. Tap to rate it in one tap.`],
   },
 };
 
@@ -105,7 +105,7 @@ export async function cafeRoutes(app: FastifyInstance) {
     if (t.push) {
       const [title, text] = t.push({ orderNo: row.order_no, cafe: order.cafe.name, rider: order.riderName });
       // Sent in the background so the cafe's tap is answered straight away.
-      void pushToUser(row.user_id, title, text, { orderId: req.params.id, status: t.to });
+      void pushToUser(row.user_id, title, text, { orderId: req.params.id, status: t.to, ...(t.to === 'delivered' ? { rate: '1' } : {}) });
       // Team orders: everyone who added items hears about it too, not just the host.
       if (order.team) void pushTeamForOrder(req.params.id, row.user_id, title, text);
     }

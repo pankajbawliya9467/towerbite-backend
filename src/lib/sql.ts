@@ -20,14 +20,15 @@ const ORDER_SELECT = `
     o.payment_method as "paymentMethod", o.cod_collected as "codCollected",
     o.customer_name as "customerName", o.customer_phone as "customerPhone",
     json_build_object('tower', o.tower, 'floor', o.floor, 'company', o.company, 'desk', o.desk) as address,
-    o.note, o.rider_name as "riderName", o.reject_reason as "rejectReason",
+    o.note, o.savings, o.rider_name as "riderName",
+    (select json_build_object('stars', r.stars, 'tags', r.tags) from order_ratings r where r.order_id = o.id) as rating, o.reject_reason as "rejectReason",
     o.created_at as "createdAt", o.accepted_at as "acceptedAt", o.out_at as "outAt",
     o.delivered_at as "deliveredAt", o.cancelled_at as "cancelledAt", o.rejected_at as "rejectedAt",
     json_build_object('id', c.id, 'slug', c.slug, 'name', c.name, 'emoji', c.emoji, 'logoUrl', c.logo_url, 'coverColor', c.cover_color,
       'place', c.place, 'phone', c.phone, 'etaMin', c.eta_min, 'etaMax', c.eta_max) as cafe,
     json_build_object('id', l.id, 'slug', l.slug, 'name', l.name) as location,
     coalesce((select json_agg(json_build_object('id', oi.id, 'menuItemId', oi.menu_item_id, 'name', oi.name,
-      'emoji', oi.emoji, 'price', oi.price, 'qty', oi.qty) order by oi.line_no, oi.name)
+      'emoji', oi.emoji, 'price', oi.price, 'qty', oi.qty, 'comboId', oi.combo_id, 'detail', oi.detail) order by oi.line_no, oi.name)
       from order_items oi where oi.order_id = o.id), '[]') as items,
     (select json_build_object('code', t.code, 'name', t.name, 'deliverTo', t.deliver_to,
        'people', (select count(distinct ti.user_id) from team_items ti where ti.team_id = t.id))
