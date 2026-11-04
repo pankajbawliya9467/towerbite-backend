@@ -11,8 +11,17 @@ type Message = { topic: string; event: string; payload: Record<string, unknown> 
  *   location:<locId>    any logged-in user             (event `cafes`: open/close, menu or price changed)
  * Pings carry no personal data: apps re-fetch from the API, which checks the login again.
  */
-export async function broadcastMany(messages: Message[]) {
-  if (!supabaseConfigured() || !messages.length) return;
+/**
+ * Sent in the background: the API answers straight away instead of waiting for Supabase (that wait
+ * was added to every order, accept, deliver…). The returned promise resolves at once.
+ */
+export function broadcastMany(messages: Message[]): Promise<void> {
+  if (!supabaseConfigured() || !messages.length) return Promise.resolve();
+  void send(messages);
+  return Promise.resolve();
+}
+
+async function send(messages: Message[]) {
   try {
     const res = await fetch(`${env.supabaseUrl}/realtime/v1/api/broadcast`, {
       method: 'POST',

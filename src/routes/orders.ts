@@ -62,31 +62,37 @@ export async function createOrder(input: {
   inTx?: (c: PoolClient, orderId: string) => Promise<void>;
 }) {
   const { user, address } = input;
-  const cafe = await one<{ id: string; location_id: string; is_open: boolean; accepting_orders: boolean; name: string }>(
-    `select id, location_id, is_open, accepting_orders, name from cafes where id = $1`,
-    [input.cafeId],
-  );
-  if (!cafe) throw notFound('Cafe not found');
-  if (!cafe.is_open || !cafe.accepting_orders) throw conflict(`${cafe.name} is not taking orders right now`);
 
   // Merge duplicate lines and price everything on the server.
   const qtyById = new Map<string, number>();
   for (const it of input.items) qtyById.set(it.menuItemId, (qtyById.get(it.menuItemId) ?? 0) + it.qty);
   const ids = [...qtyById.keys()];
-  const menu = ids.length
-    ? await q<{ id: string; name: string; emoji: string; price: number; is_available: boolean }>(
-        `select id, name, emoji, price, is_available from menu_items where cafe_id = $1 and id = any($2::uuid[])`,
-        [cafe.id, ids],
-      )
-    : [];
+  const comboQty = new Map<string, number>();
+  for (const it of input.combos ?? []) comboQty.set(it.comboId, (comboQty.get(it.comboId) ?? 0) + it.qty);
+
+  // All reads at the same time (one wait instead of four).
+  const [cafe, menu, allCombos, profile] = await Promise.all([
+    one<{ id: string; location_id: string; is_open: boolean; accepting_orders: boolean; name: string }>(
+      `select id, location_id, is_open, accepting_orders, name from cafes where id = $1`,
+      [input.cafeId],
+    ),
+    ids.length
+      ? q<{ id: string; name: string; emoji: string; price: number; is_available: boolean }>(
+          `select id, name, emoji, price, is_available from menu_items where cafe_id = $1 and id = any($2::uuid[])`,
+          [input.cafeId, ids],
+        )
+      : Promise.resolve([]),
+    comboQty.size ? cafeCombos(input.cafeId, true) : Promise.resolve([]),
+    one<{ name: string; phone: string | null }>(`select name, phone from profiles where id = $1`, [user.id]),
+  ]);
+  if (!cafe) throw notFound('Cafe not found');
+  if (!cafe.is_open || !cafe.accepting_orders) throw conflict(`${cafe.name} is not taking orders right now`);
   if (menu.length !== ids.length) throw badRequest('Some items are not on this cafe\'s menu');
   const unavailable = menu.filter((m) => !m.is_available);
   if (unavailable.length) throw conflict(`${unavailable.map((m) => m.name).join(', ')} is out of stock`);
 
   // Combos: priced and checked (time, day, stock) on the server too.
-  const comboQty = new Map<string, number>();
-  for (const it of input.combos ?? []) comboQty.set(it.comboId, (comboQty.get(it.comboId) ?? 0) + it.qty);
-  const combos = comboQty.size ? (await cafeCombos(cafe.id, true)).filter((x) => comboQty.has(x.id)) : [];
+  const combos = allCombos.filter((x) => comboQty.has(x.id));
   if (combos.length !== comboQty.size) throw badRequest('This combo is not on this cafe\'s menu any more');
   const offCombo = combos.find((x) => !x.availableNow);
   if (offCombo) throw conflict(`${offCombo.name} is not available right now`);
@@ -100,7 +106,6 @@ export async function createOrder(input: {
   const savings = combos.reduce((s, x) => s + Math.max(0, x.mrp - x.price) * comboQty.get(x.id)!, 0);
   const deliveryFee = 0;
 
-  const profile = await one<{ name: string; phone: string | null }>(`select name, phone from profiles where id = $1`, [user.id]);
   const customerName = input.name || profile?.name || '';
   // Always the verified login number, so nobody can put someone else's phone on an order.
   const customerPhone = user.phone ?? profile?.phone ?? null;
@@ -117,26 +122,30 @@ export async function createOrder(input: {
     if (limits.active >= MAX_ACTIVE_ORDERS) throw conflict('You already have orders on the way. Please wait for them first.');
     if (limits.recent >= MAX_ORDERS_PER_10_MIN) throw tooMany('Too many orders. Please try again in a few minutes.');
 
+    // The order, all its lines and the profile row in one statement (one wait instead of one per line).
     const { rows } = await c.query(
-      `insert into orders (user_id, cafe_id, location_id, items_total, delivery_fee, total,
-         customer_name, customer_phone, tower, floor, company, desk, note, savings)
-       values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id`,
+      `with o as (
+         insert into orders (user_id, cafe_id, location_id, items_total, delivery_fee, total,
+           customer_name, customer_phone, tower, floor, company, desk, note, savings)
+         values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) returning id
+       ), lines as (
+         insert into order_items (order_id, menu_item_id, name, emoji, price, qty, line_no, combo_id, detail)
+         select o.id, l.menu_item_id, l.name, l.emoji, l.price, l.qty, l.line_no, l.combo_id, l.detail
+         from o, jsonb_to_recordset($15::jsonb) as l(menu_item_id uuid, name text, emoji text, price int, qty int,
+           line_no int, combo_id uuid, detail text)
+       ), p as (
+         insert into profiles (id, phone, email) values ($1, $16, $17) on conflict (id) do nothing
+       )
+       select id from o`,
       [user.id, cafe.id, cafe.location_id, itemsTotal, deliveryFee, itemsTotal + deliveryFee, customerName,
-        customerPhone, address.tower, address.floor, address.company, address.desk, input.note ?? null, savings],
+        customerPhone, address.tower, address.floor, address.company, address.desk, input.note ?? null, savings,
+        JSON.stringify(lines.map((l, lineNo) => ({
+          menu_item_id: l.id, name: l.name, emoji: l.emoji, price: l.price, qty: l.qty, line_no: lineNo, combo_id: l.comboId, detail: l.detail,
+        }))),
+        user.phone, user.email],
     );
     const id = rows[0].id as string;
-    for (const [lineNo, l] of lines.entries()) {
-      await c.query(
-        `insert into order_items (order_id, menu_item_id, name, emoji, price, qty, line_no, combo_id, detail)
-         values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [id, l.id, l.name, l.emoji, l.price, l.qty, lineNo, l.comboId, l.detail],
-      );
-    }
     // Remember the desk address (and name) for next time.
-    await c.query(
-      `insert into profiles (id, phone, email) values ($1, $2, $3) on conflict (id) do nothing`,
-      [user.id, user.phone, user.email],
-    );
     if (input.saveAddress) {
       await c.query(
         `update profiles set tower = $2, floor = $3, company = $4, desk = $5, location_id = $6,
@@ -148,9 +157,8 @@ export async function createOrder(input: {
     return id;
   });
 
-  const order = await selectOrder(orderId);
-  await orderChanged({ orderId, cafeId: cafe.id, userId: user.id, status: 'placed' });
-  return order;
+  void orderChanged({ orderId, cafeId: cafe.id, userId: user.id, status: 'placed' });
+  return selectOrder(orderId);
 }
 
 export async function orderRoutes(app: FastifyInstance) {

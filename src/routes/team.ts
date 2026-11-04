@@ -26,6 +26,8 @@ const CreateTeam = z.object({
   deliverAt: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'use HH:MM').nullable().optional(),
   closesInMin: z.number().int().min(5).max(180).default(15),
   payMode: z.enum(['split', 'host']).default('split'),
+  /** optional code chosen by the app (same alphabet as newCode) */
+  code: z.string().regex(/^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$/).optional(),
   upiId: z
     .string()
     .trim()
@@ -151,16 +153,18 @@ export async function teamRoutes(app: FastifyInstance) {
     const user = await requireUser(req);
     requireEmployeePhone(user);
     const body = CreateTeam.parse(req.body);
-    const cafe = await one<{ id: string; location_id: string; name: string; is_open: boolean; accepting_orders: boolean }>(
-      `select id, location_id, name, is_open, accepting_orders from cafes where id = $1`,
-      [body.cafeId],
-    );
+    const [cafe, profile] = await Promise.all([
+      one<{ id: string; location_id: string; name: string; is_open: boolean; accepting_orders: boolean }>(
+        `select id, location_id, name, is_open, accepting_orders from cafes where id = $1`,
+        [body.cafeId],
+      ),
+      one<{ name: string; tower: string; floor: string; company: string }>(
+        `select name, tower, floor, company from profiles where id = $1`,
+        [user.id],
+      ),
+    ]);
     if (!cafe) throw notFound('Cafe not found');
     if (!cafe.is_open || !cafe.accepting_orders) throw conflict(`${cafe.name} is not taking orders right now`);
-    const profile = await one<{ name: string; tower: string; floor: string; company: string }>(
-      `select name, tower, floor, company from profiles where id = $1`,
-      [user.id],
-    );
     if (!profile?.tower || !profile.floor) throw badRequest('Add your tower and floor first (Profile → Desk address)');
     const code = await tx(async (c) => {
       // Checked under a per-user lock, so parallel requests can't get past the limit.
@@ -171,19 +175,22 @@ export async function teamRoutes(app: FastifyInstance) {
       );
       if (open.n >= MAX_OPEN_PER_HOST) throw tooMany('You already have 3 open team orders. Place or cancel one first.');
       for (let attempt = 0; attempt < 5; attempt++) {
-        const code = newCode();
+        // The app may suggest the code (so it can open the share screen before this finishes); taken → a new one.
+        const code = attempt === 0 && body.code ? body.code : newCode();
         const { rows } = await c.query(
-          `insert into team_orders (code, host_id, cafe_id, location_id, name, deliver_to, deliver_at, closes_at,
-             pay_mode, host_upi, tower, floor, company)
-           values ($1,$2,$3,$4,$5,$6,$7, now() + make_interval(mins => $8), $9,$10,$11,$12,$13)
-           on conflict (code) do nothing returning id`,
+          `with t as (
+             insert into team_orders (code, host_id, cafe_id, location_id, name, deliver_to, deliver_at, closes_at,
+               pay_mode, host_upi, tower, floor, company)
+             values ($1,$2,$3,$4,$5,$6,$7, now() + make_interval(mins => $8), $9,$10,$11,$12,$13)
+             on conflict (code) do nothing returning id
+           ), m as (
+             insert into team_members (team_id, user_id, name) select id, $2, $14 from t
+           )
+           select id from t`,
           [code, user.id, cafe.id, cafe.location_id, body.name, body.deliverTo, body.deliverAt ?? null, body.closesInMin,
-            body.payMode, body.upiId ?? null, profile.tower, profile.floor, profile.company],
+            body.payMode, body.upiId ?? null, profile.tower, profile.floor, profile.company, profile.name],
         );
-        if (rows[0]) {
-          await c.query(`insert into team_members (team_id, user_id, name) values ($1, $2, $3)`, [rows[0].id, user.id, profile.name]);
-          return code;
-        }
+        if (rows[0]) return code;
       }
       throw conflict('Please try again');
     });
