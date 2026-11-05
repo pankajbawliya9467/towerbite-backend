@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { one, q } from '../db.js';
 import { requireCafe } from '../auth.js';
 import { ACTIVE_STATUSES, selectOrder, selectOrders, type OrderStatus } from '../lib/sql.js';
-import { conflict, notFound } from '../lib/errors.js';
+import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { cafesChanged, orderChanged } from '../realtime.js';
 import { pushToUser } from '../push.js';
 import { cafeWithMenu } from './public.js';
@@ -26,7 +26,7 @@ const TRANSITIONS: Record<string, Transition> = {
     push: (o) => [`${o.cafe} couldn't take your order`, `Order #${o.orderNo} was not accepted.`],
   },
   dispatch: {
-    from: 'preparing', to: 'out_for_delivery', set: 'out_at = now(), rider_name = $3',
+    from: 'preparing', to: 'out_for_delivery', set: 'out_at = now(), rider_name = $3, rider_phone = $4',
     push: (o) => ['Your order is on the way', `${o.rider ? `${o.rider} is bringing` : 'We are bringing'} order #${o.orderNo} to your desk.`],
   },
   deliver: {
@@ -83,33 +83,111 @@ export async function cafeRoutes(app: FastifyInstance) {
     );
   });
 
-  app.post<{ Params: { id: string; action: string } }>('/v1/cafe/orders/:id/:action', async (req) => {
-    const { cafeId } = await requireCafe(req);
-    if (!Object.hasOwn(TRANSITIONS, req.params.action)) throw notFound('Unknown action');
-    const t = TRANSITIONS[req.params.action];
-    const body = z
-      .object({ reason: z.string().trim().max(120).optional(), riderName: z.string().trim().max(40).optional() })
-      .parse(req.body ?? {});
-    const extra = req.params.action === 'reject' ? body.reason ?? null : body.riderName ?? null;
-    const params: unknown[] = [req.params.id, cafeId];
-    if (t.set.includes('$3')) params.push(extra);
+  /** Moves one order to its next step (accept, reject, dispatch, deliver); tells the customer. */
+  async function transition(cafeId: string, orderId: string, action: string, extra: { reason?: string; riderName?: string; riderId?: string }) {
+    if (!Object.hasOwn(TRANSITIONS, action)) throw notFound('Unknown action');
+    const t = TRANSITIONS[action];
+    let riderName = extra.riderName ?? null;
+    let riderPhone: string | null = null;
+    if (action === 'dispatch' && extra.riderId) {
+      const r = await one<{ name: string; phone: string | null }>(`select name, phone from cafe_riders where id = $1 and cafe_id = $2`, [extra.riderId, cafeId]);
+      if (!r) throw badRequest('Delivery person not found');
+      riderName = r.name;
+      riderPhone = r.phone;
+    }
+    const params: unknown[] = [orderId, cafeId];
+    if (action === 'reject') params.push(extra.reason ?? null);
+    if (action === 'dispatch') params.push(riderName, riderPhone);
     const row = await one<{ user_id: string; order_no: number }>(
       `update orders set status = '${t.to}', ${t.set}
        where id = $1 and cafe_id = $2 and status = '${t.from}' returning user_id, order_no`,
       params,
     );
     if (!row) throw conflict('This order was already updated. Refresh to see the latest.');
-
-    const order = await selectOrder(req.params.id);
-    await orderChanged({ orderId: req.params.id, cafeId, userId: row.user_id, status: t.to });
+    const order = await selectOrder(orderId);
+    void orderChanged({ orderId, cafeId, userId: row.user_id, status: t.to });
     if (t.push) {
       const [title, text] = t.push({ orderNo: row.order_no, cafe: order.cafe.name, rider: order.riderName });
       // Sent in the background so the cafe's tap is answered straight away.
-      void pushToUser(row.user_id, title, text, { orderId: req.params.id, status: t.to, ...(t.to === 'delivered' ? { rate: '1' } : {}) });
+      void pushToUser(row.user_id, title, text, { orderId, status: t.to, ...(t.to === 'delivered' ? { rate: '1' } : {}) });
       // Team orders: everyone who added items hears about it too, not just the host.
-      if (order.team) void pushTeamForOrder(req.params.id, row.user_id, title, text);
+      if (order.team) void pushTeamForOrder(orderId, row.user_id, title, text);
     }
     return order;
+  }
+
+  const ActionBody = z.object({
+    reason: z.string().trim().max(120).optional(),
+    riderName: z.string().trim().max(40).optional(),
+    riderId: z.string().uuid().optional(),
+  });
+
+  /** Several orders at once: send out together with one delivery person, or mark several delivered. */
+  app.post('/v1/cafe/orders/batch', async (req) => {
+    const { cafeId } = await requireCafe(req);
+    const body = ActionBody.extend({
+      action: z.enum(['dispatch', 'deliver']),
+      ids: z.array(z.string().uuid()).min(1).max(20),
+    }).parse(req.body);
+    const results = await Promise.all(
+      [...new Set(body.ids)].map((id) =>
+        transition(cafeId, id, body.action, body).then(
+          (order) => ({ id, ok: true as const, order }),
+          (e: Error) => ({ id, ok: false as const, error: e.message }),
+        ),
+      ),
+    );
+    return { results };
+  });
+
+  app.post<{ Params: { id: string; action: string } }>('/v1/cafe/orders/:id/:action', async (req) => {
+    const { cafeId } = await requireCafe(req);
+    z.string().uuid().parse(req.params.id);
+    return transition(cafeId, req.params.id, req.params.action, ActionBody.parse(req.body ?? {}));
+  });
+
+  // ---- Delivery staff ----
+  const RiderBody = z.object({
+    name: z.string().trim().min(1).max(40),
+    phone: z.string().trim().regex(/^\+?[0-9 ]{6,16}$/, 'Enter a valid phone number').nullable().optional(),
+    sort: z.number().int().min(0).max(1000).optional(),
+  });
+
+  app.get('/v1/cafe/riders', async (req) => {
+    const { cafeId } = await requireCafe(req);
+    return q(`select id, name, phone, sort from cafe_riders where cafe_id = $1 order by sort, created_at`, [cafeId]);
+  });
+
+  app.post('/v1/cafe/riders', async (req, reply) => {
+    const { cafeId } = await requireCafe(req);
+    const body = RiderBody.parse(req.body);
+    const n = await one<{ n: number }>(`select count(*)::int as n from cafe_riders where cafe_id = $1`, [cafeId]);
+    if ((n?.n ?? 0) >= 30) throw conflict('Up to 30 delivery staff per cafe');
+    reply.code(201);
+    return one(
+      `insert into cafe_riders (cafe_id, name, phone, sort) values ($1, $2, $3, $4) returning id, name, phone, sort`,
+      [cafeId, body.name, body.phone || null, body.sort ?? n?.n ?? 0],
+    );
+  });
+
+  app.patch<{ Params: { id: string } }>('/v1/cafe/riders/:id', async (req) => {
+    const { cafeId } = await requireCafe(req);
+    z.string().uuid().parse(req.params.id);
+    const body = RiderBody.parse(req.body);
+    const row = await one(
+      `update cafe_riders set name = $3, phone = $4, sort = coalesce($5, sort) where id = $1 and cafe_id = $2 returning id, name, phone, sort`,
+      [req.params.id, cafeId, body.name, body.phone || null, body.sort ?? null],
+    );
+    if (!row) throw notFound('Delivery person not found');
+    return row;
+  });
+
+  app.delete<{ Params: { id: string } }>('/v1/cafe/riders/:id', async (req) => {
+    const { cafeId } = await requireCafe(req);
+    z.string().uuid().parse(req.params.id);
+    const row = await one(`delete from cafe_riders where id = $1 and cafe_id = $2 returning id`, [req.params.id, cafeId]);
+    if (!row) throw notFound('Delivery person not found');
+    return { ok: true };
   });
 
   app.get('/v1/cafe/menu', async (req) => {

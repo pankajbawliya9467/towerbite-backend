@@ -327,3 +327,34 @@ test('combos: cafe builds one, customer orders it at the combo price, then rates
   assert.equal((await call('POST', `/v1/cafe/ratings/${id}/sorry`, cafeStaff, { message: 'Again sorry!!' })).status, 409, 'once');
   await call('DELETE', `/v1/cafe/combos/${made.body.id}`, cafeStaff);
 });
+
+test('delivery staff: saved riders, one-tap send out with name + phone, batch send out and deliver', async () => {
+  assert.equal((await call('POST', '/v1/cafe/riders', H(phone(70)), { name: 'X' })).status, 403);
+  const raju = await call('POST', '/v1/cafe/riders', cafeStaff, { name: 'Raju', phone: '+91 98765 43210' });
+  assert.equal(raju.status, 201, JSON.stringify(raju.body));
+  assert.equal((await call('POST', '/v1/cafe/riders', cafeStaff, { name: 'Bad', phone: 'call me' })).status, 400);
+  assert.ok((await call('GET', '/v1/cafe/riders', cafeStaff)).body.some((r: any) => r.id === raju.body.id));
+
+  const cafe = (await call('GET', '/v1/cafe', cafeStaff)).body;
+  const item = cafe.items.find((i: any) => i.isAvailable);
+  const ids: string[] = [];
+  for (const k of [71, 72]) {
+    const emp = await employee(k, `Batch ${k}`);
+    const o = await call('POST', '/v1/orders', emp, { cafeId: cafe.id, items: [{ menuItemId: item.id, qty: 1 }], address });
+    assert.equal(o.status, 201, JSON.stringify(o.body));
+    ids.push(o.body.id);
+    await call('POST', `/v1/cafe/orders/${o.body.id}/accept`, cafeStaff, {});
+  }
+  // one already out, so the batch reports it per order
+  const single = await call('POST', `/v1/cafe/orders/${ids[0]}/dispatch`, cafeStaff, { riderId: raju.body.id });
+  assert.equal(single.body.riderName, 'Raju');
+  assert.equal(single.body.riderPhone, '+91 98765 43210');
+  const batch = await call('POST', '/v1/cafe/orders/batch', cafeStaff, { action: 'dispatch', ids, riderId: raju.body.id });
+  assert.equal(batch.status, 200);
+  assert.deepEqual(batch.body.results.map((r: any) => r.ok), [false, true]);
+  const done = await call('POST', '/v1/cafe/orders/batch', cafeStaff, { action: 'deliver', ids });
+  assert.ok(done.body.results.every((r: any) => r.ok && r.order.status === 'delivered'));
+  // another cafe's rider id is refused
+  assert.equal((await call('POST', '/v1/cafe/orders/batch', cafeStaff, { action: 'accept', ids })).status, 400);
+  await call('DELETE', `/v1/cafe/riders/${raju.body.id}`, cafeStaff);
+});

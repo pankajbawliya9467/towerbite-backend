@@ -20,7 +20,7 @@ const ORDER_SELECT = `
     o.payment_method as "paymentMethod", o.cod_collected as "codCollected",
     o.customer_name as "customerName", o.customer_phone as "customerPhone",
     json_build_object('tower', o.tower, 'floor', o.floor, 'company', o.company, 'desk', o.desk) as address,
-    o.note, o.savings, o.rider_name as "riderName",
+    o.note, o.savings, o.rider_name as "riderName", o.rider_phone as "riderPhone",
     (select json_build_object('stars', r.stars, 'tags', r.tags) from order_ratings r where r.order_id = o.id) as rating, o.reject_reason as "rejectReason",
     o.created_at as "createdAt", o.accepted_at as "acceptedAt", o.out_at as "outAt",
     o.delivered_at as "deliveredAt", o.cancelled_at as "cancelledAt", o.rejected_at as "rejectedAt",
