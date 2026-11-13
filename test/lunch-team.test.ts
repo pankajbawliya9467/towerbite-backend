@@ -358,3 +358,16 @@ test('delivery staff: saved riders, one-tap send out with name + phone, batch se
   assert.equal((await call('POST', '/v1/cafe/orders/batch', cafeStaff, { action: 'accept', ids })).status, 400);
   await call('DELETE', `/v1/cafe/riders/${raju.body.id}`, cafeStaff);
 });
+
+test('account deletion requests: public form, same answer for any number, admin can handle them', async () => {
+  const unknown = await call('POST', '/v1/account/requests', {}, { phone: '98000 11122', kind: 'delete_account' });
+  assert.equal(unknown.status, 200, JSON.stringify(unknown.body));
+  assert.equal(unknown.body.ok, true);
+  assert.equal((await call('POST', '/v1/account/requests', {}, { phone: '12345' })).status, 400);
+  assert.equal((await call('GET', '/v1/admin/account-requests', cafeStaff)).status, 403);
+  const admin = H('admin@towerbites.dev');
+  const list = await call('GET', '/v1/admin/account-requests?status=pending', admin);
+  const mine = list.body.find((r: any) => r.phone === '+919800011122');
+  assert.ok(mine);
+  assert.equal((await call('PATCH', `/v1/admin/account-requests/${mine.id}`, admin, { status: 'done', note: 'deleted' })).status, 200);
+});
