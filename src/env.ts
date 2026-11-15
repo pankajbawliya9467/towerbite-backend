@@ -42,7 +42,35 @@ export const env = {
   trustProxy: Math.max(0, Number(process.env.TRUST_PROXY ?? 1) || 0),
   /** Employees must log in with a phone number starting with one of these (comma separated). Empty = any country. */
   allowedPhonePrefixes: (process.env.ALLOWED_PHONE_PREFIXES ?? '+91').split(',').map((s) => s.trim()).filter(Boolean),
+  /**
+   * Test login (testers, Play Store reviewer, no SMS): numbers in TEST_LOGIN_NUMBERS log in with TEST_LOGIN_OTP.
+   * TEST_LOGIN_ALL_UNTIL=YYYY-MM-DD opens it to every Indian number until that date (max 45 days ahead).
+   * Test-code sessions end as soon as the number stops being a test number.
+   */
+  testLogin: testLoginConfig(),
 };
+
+function testLoginConfig() {
+  const numbers = (process.env.TEST_LOGIN_NUMBERS ?? '')
+    .split(',')
+    .map((s) => s.replace(/[\s-]/g, ''))
+    .filter(Boolean)
+    .map((s) => (s.startsWith('+') ? s : s.length === 10 ? `+91${s}` : `+${s}`));
+  const otp = (process.env.TEST_LOGIN_OTP ?? '123456').trim();
+  if (!/^\d{6}$/.test(otp)) throw new Error('TEST_LOGIN_OTP must be 6 digits');
+  let allUntil: number | null = null;
+  const until = (process.env.TEST_LOGIN_ALL_UNTIL ?? '').trim();
+  if (until) {
+    const t = Date.parse(`${until}T23:59:59+05:30`);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(until) || Number.isNaN(t)) throw new Error('TEST_LOGIN_ALL_UNTIL must be a date like 2026-12-05');
+    if (t - Date.now() > 45 * 86400_000) console.warn('TEST_LOGIN_ALL_UNTIL is more than 45 days away: ignored.');
+    else if (t > Date.now()) {
+      allUntil = t;
+      console.warn(`TEST LOGIN IS OPEN FOR ALL NUMBERS until ${until}: anyone can log in to any account with the test code.`);
+    }
+  }
+  return { numbers, otp, allUntil };
+}
 
 export const supabaseConfigured = () =>
   !!env.supabaseUrl && !!env.supabaseServiceKey && !env.supabaseUrl.includes('YOUR-PROJECT');

@@ -1,4 +1,5 @@
 import { env, supabaseConfigured } from './env.js';
+import { publish } from './liveHub.js';
 
 type Message = { topic: string; event: string; payload: Record<string, unknown> };
 
@@ -16,6 +17,8 @@ type Message = { topic: string; event: string; payload: Record<string, unknown> 
  * was added to every order, accept, deliver…). The returned promise resolves at once.
  */
 export function broadcastMany(messages: Message[]): Promise<void> {
+  // The app listens on our own /v1/live socket; the website and CRM still use Supabase Realtime.
+  for (const m of messages) publish(m.topic, m.event, m.payload);
   if (!supabaseConfigured() || !messages.length) return Promise.resolve();
   void send(messages);
   return Promise.resolve();

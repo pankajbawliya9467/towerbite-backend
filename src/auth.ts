@@ -5,6 +5,8 @@ import { supabase } from './supabase.js';
 import { devUserId } from './lib/devId.js';
 import { forbidden, unauthorized } from './lib/errors.js';
 import { InvalidToken, verifyLocally } from './lib/jwt.js';
+import { verifySession } from './lib/sessions.js';
+import { isTestNumber } from './lib/testLogin.js';
 
 export type AuthUser = { id: string; phone: string | null; email: string | null };
 export type Staff = { userId: string; role: 'cafe_staff' | 'super_admin'; cafeId: string | null; name: string };
@@ -15,23 +17,37 @@ declare module 'fastify' {
   }
 }
 
-/** Verifies the Supabase access token from `Authorization: Bearer <token>`. */
+/** Verifies the login token from `Authorization: Bearer <token>`. */
 export async function requireUser(req: FastifyRequest): Promise<AuthUser> {
   if (req.authUser) return req.authUser;
   const header = req.headers.authorization ?? '';
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  req.authUser = await userFromBearer(token);
+  return req.authUser;
+}
+
+/**
+ * Any login token we accept: our own sessions (`tbs_…`: app, website, CRM), Supabase access tokens (old logins),
+ * and `dev:<phone>` when DEV_AUTH is on (never in production). Also used by the live WebSocket.
+ */
+export async function userFromBearer(token: string): Promise<AuthUser> {
   if (!token) throw unauthorized();
 
   if (env.devAuth && token.startsWith('dev:')) {
     const ident = token.slice(4).trim();
     if (!ident) throw unauthorized();
     const isEmail = ident.includes('@');
-    req.authUser = { id: devUserId(ident), phone: isEmail ? null : ident, email: isEmail ? ident.toLowerCase() : null };
-    return req.authUser;
+    return { id: devUserId(ident), phone: isEmail ? null : ident, email: isEmail ? ident.toLowerCase() : null };
   }
 
-  req.authUser = await userFromToken(token);
-  return req.authUser;
+  // Our own sessions (app logins through /v1/auth/otp). Test-code sessions end when the number stops being a test number.
+  if (token.startsWith('tbs_')) {
+    const sess = await verifySession(token);
+    if (!sess || (sess.viaTest && !(sess.phone && isTestNumber(sess.phone)))) throw unauthorized('Session expired, please log in again');
+    return { id: sess.id, phone: sess.phone, email: sess.email };
+  }
+
+  return userFromToken(token);
 }
 
 /** Tokens Supabase confirmed for us, kept briefly so the same token isn't checked over the network again. */

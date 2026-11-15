@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { randomUUID } from 'node:crypto';
 import { z, type ZodRawShape } from 'zod';
+import { hashPassword } from '../lib/passwords.js';
+import { endUserSessions } from '../lib/sessions.js';
 import { one, q } from '../db.js';
 import { env, supabaseConfigured } from '../env.js';
 import { requireAdmin } from '../auth.js';
@@ -248,13 +250,14 @@ export async function adminRoutes(app: FastifyInstance) {
     } else if (env.devAuth) {
       userId = devUserId(body.email);
     } else {
-      throw badRequest('Supabase is not configured');
+      userId = randomUUID(); // no Supabase (own database): the login lives only in our staff table
     }
 
     await q(
-      `insert into staff (user_id, role, cafe_id, name, email) values ($1, $2, $3, $4, $5)
-       on conflict (user_id) do update set role = excluded.role, cafe_id = excluded.cafe_id, name = excluded.name`,
-      [userId, body.role, body.role === 'cafe_staff' ? body.cafeId : null, body.name, body.email],
+      `insert into staff (user_id, role, cafe_id, name, email, password_hash, password_set_at) values ($1, $2, $3, $4, $5, $6, now())
+       on conflict (user_id) do update set role = excluded.role, cafe_id = excluded.cafe_id, name = excluded.name,
+         password_hash = excluded.password_hash, password_set_at = now()`,
+      [userId, body.role, body.role === 'cafe_staff' ? body.cafeId : null, body.name, body.email, await hashPassword(body.password)],
     );
     reply.code(201);
     return { userId, ...body, password: undefined };
@@ -265,7 +268,21 @@ export async function adminRoutes(app: FastifyInstance) {
     if (me.userId === req.params.userId) throw badRequest('You cannot remove your own admin access');
     const row = await one(`delete from staff where user_id = $1 returning user_id`, [req.params.userId]);
     if (!row) throw notFound();
+    await endUserSessions(req.params.userId);
     if (supabaseConfigured()) await supabase().auth.admin.deleteUser(req.params.userId).catch(() => undefined);
+    return { ok: true };
+  });
+
+  /** New password for a staff login (forgotten password). Logs them out everywhere. */
+  app.post<{ Params: { userId: string } }>('/v1/admin/staff/:userId/password', async (req) => {
+    await requireAdmin(req);
+    const { password } = z.object({ password: z.string().min(8).max(72) }).parse(req.body);
+    const row = await one(`update staff set password_hash = $2, password_set_at = now() where user_id = $1 returning user_id`, [
+      req.params.userId,
+      await hashPassword(password),
+    ]);
+    if (!row) throw notFound();
+    await endUserSessions(req.params.userId);
     return { ok: true };
   });
 

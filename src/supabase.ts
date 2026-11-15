@@ -11,3 +11,14 @@ export function supabase(): SupabaseClient {
   });
   return client;
 }
+
+/**
+ * A throwaway client for one sign-in check (password / SMS code). Signing in stores the user's session on
+ * the client, so it must never be the shared service-role client above.
+ */
+export function supabaseAuthCheck(): SupabaseClient {
+  if (!supabaseConfigured()) throw new Error('Supabase is not configured: set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY');
+  return createClient(env.supabaseUrl, env.supabaseServiceKey, {
+    auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+  });
+}

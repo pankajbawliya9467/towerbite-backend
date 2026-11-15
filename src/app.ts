@@ -17,6 +17,9 @@ import { teamRoutes } from './routes/team.js';
 import { notifyRoutes } from './routes/notify.js';
 import { comboRoutes } from './routes/combos.js';
 import { accountRoutes } from './routes/account.js';
+import { authOtpRoutes } from './routes/authOtp.js';
+import { authStaffRoutes } from './routes/authStaff.js';
+import { liveRoutes } from './routes/live.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -70,6 +73,9 @@ export async function buildApp() {
   await app.register(lunchRoutes);
   await app.register(comboRoutes);
   await app.register(accountRoutes);
+  await app.register(authOtpRoutes);
+  await app.register(authStaffRoutes);
+  await app.register(liveRoutes);
   await app.register(teamRoutes);
   await app.register(notifyRoutes);
   return app;
