@@ -48,6 +48,16 @@ export const env = {
    * Test-code sessions end as soon as the number stops being a test number.
    */
   testLogin: testLoginConfig(),
+  /**
+   * Who delivers the login SMS: `2factor` (2Factor.in, our own codes) or `supabase` (Supabase phone OTP).
+   * Default: 2factor when TWOFACTOR_API_KEY is set, else supabase.
+   */
+  otpProvider: (process.env.OTP_PROVIDER ?? (process.env.TWOFACTOR_API_KEY ? '2factor' : 'supabase')).trim().toLowerCase(),
+  twoFactor: {
+    apiKey: (process.env.TWOFACTOR_API_KEY ?? '').trim(),
+    /** Name of the DLT-approved OTP template in the 2Factor dashboard (empty = 2Factor's default template). */
+    template: (process.env.TWOFACTOR_TEMPLATE ?? '').trim(),
+  },
 };
 
 function testLoginConfig() {
