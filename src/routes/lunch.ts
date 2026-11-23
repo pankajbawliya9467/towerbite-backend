@@ -23,7 +23,7 @@ const SLOT = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
 
 const LUNCH_SELECT = `
   select l.id, l.cafe_id as "cafeId", to_char(l.day, 'YYYY-MM-DD') as day, l.name, l.items, l.price,
-    l.is_veg as "isVeg", l.plates, to_char(l.closes_at, 'HH24:MI') as "closesAt",
+    l.is_veg as "isVeg", l.image_url as "imageUrl", l.plates, to_char(l.closes_at, 'HH24:MI') as "closesAt",
     to_char(l.cancel_until, 'HH24:MI') as "cancelUntil", l.slots, l.is_active as "isActive",
     coalesce(b.booked, 0)::int as booked,
     greatest(l.plates - coalesce(b.booked, 0), 0)::int as "left",
@@ -44,7 +44,7 @@ const BOOKING_SELECT = `
     b.note, b.created_at as "createdAt", b.out_at as "outAt", b.delivered_at as "deliveredAt", b.cancelled_at as "cancelledAt",
     (b.status = 'booked' and (b.day + l.cancel_until) > ${NOW}) as "canCancel",
     to_char(l.cancel_until, 'HH24:MI') as "cancelUntil",
-    json_build_object('name', l.name, 'items', l.items, 'isVeg', l.is_veg) as lunch,
+    json_build_object('name', l.name, 'items', l.items, 'isVeg', l.is_veg, 'imageUrl', l.image_url) as lunch,
     json_build_object('id', c.id, 'name', c.name, 'place', c.place, 'coverColor', c.cover_color, 'emoji', c.emoji, 'phone', c.phone) as cafe
   from lunch_bookings b
   join lunch_menus l on l.id = b.lunch_id
@@ -57,6 +57,7 @@ const LunchInput = z
     items: z.string().trim().max(240).default(''),
     price: z.number().int().min(0).max(5000),
     isVeg: z.boolean().default(true),
+    imageUrl: z.string().url().max(500).regex(/^https:\/\//, 'Image must be an https link').nullable().default(null),
     plates: z.number().int().min(1).max(1000),
     closesAt: z.string().regex(HHMM).default('11:30'),
     cancelUntil: z.string().regex(HHMM).default('10:30'),
@@ -212,9 +213,9 @@ export async function lunchRoutes(app: FastifyInstance) {
     const days = [...new Set([body.day, ...body.alsoOn])];
     await checkDays(days);
     const rows = await q<{ id: string }>(
-      `insert into lunch_menus (cafe_id, day, name, items, price, is_veg, plates, closes_at, cancel_until, slots)
-       select $1, d, $3, $4, $5, $6, $7, $8, $9, $10 from unnest($2::date[]) d returning id`,
-      [cafeId, days, body.name, body.items, body.price, body.isVeg, body.plates, body.closesAt, body.cancelUntil, body.slots],
+      `insert into lunch_menus (cafe_id, day, name, items, price, is_veg, plates, closes_at, cancel_until, slots, image_url)
+       select $1, d, $3, $4, $5, $6, $7, $8, $9, $10, $11 from unnest($2::date[]) d returning id`,
+      [cafeId, days, body.name, body.items, body.price, body.isVeg, body.plates, body.closesAt, body.cancelUntil, body.slots, body.imageUrl],
     );
     await locationChanged(cafeId);
     reply.code(201);
@@ -239,9 +240,9 @@ export async function lunchRoutes(app: FastifyInstance) {
       if (l.booked && body.day !== l.day) throw conflict('People already booked this lunch, so its day can\'t change');
       await c.query(
         `update lunch_menus set day = $3, name = $4, items = $5, price = $6, is_veg = $7, plates = $8,
-           closes_at = $9, cancel_until = $10, slots = $11 where id = $1 and cafe_id = $2`,
+           closes_at = $9, cancel_until = $10, slots = $11, image_url = $12 where id = $1 and cafe_id = $2`,
         [req.params.id, cafeId, body.day, body.name, body.items, body.price, body.isVeg, body.plates,
-          body.closesAt, body.cancelUntil, body.slots],
+          body.closesAt, body.cancelUntil, body.slots, body.imageUrl],
       );
     });
     await locationChanged(cafeId);

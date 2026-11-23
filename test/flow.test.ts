@@ -89,7 +89,9 @@ test('admin manages cafes and products; others cannot', async () => {
   assert.equal(upd.body.price, 25);
   const stats = await call('GET', '/v1/admin/stats', admin);
   assert.ok(stats.body.cafes >= 7);
-  assert.equal((await call('DELETE', `/v1/admin/cafes/${c.body.id}`, admin)).status, 200);
+  // Cafes are never deleted, only made inactive (their orders and reports stay).
+  assert.equal((await call('DELETE', `/v1/admin/cafes/${c.body.id}`, admin)).status, 400);
+  assert.equal((await call('PATCH', `/v1/admin/cafes/${c.body.id}`, admin, { isActive: false })).body.isActive, false);
   assert.equal((await call('GET', '/v1/admin/cafes/not-a-uuid', admin)).status, 404);
 });
 

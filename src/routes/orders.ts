@@ -7,6 +7,7 @@ import { badRequest, conflict, forbidden, notFound, tooMany } from '../lib/error
 import { env } from '../env.js';
 import { orderChanged } from '../realtime.js';
 import { cafeCombos, comboDetail } from '../lib/combos.js';
+import { checkGeo, GeoInput, type Geo } from '../lib/geo.js';
 
 const PlaceOrder = z.object({
   cafeId: z.string().uuid(),
@@ -28,6 +29,7 @@ const PlaceOrder = z.object({
   phone: z.string().trim().max(20).optional(),
   note: z.string().trim().max(200).optional(),
   saveAddress: z.boolean().default(true),
+  geo: GeoInput,
 });
 
 /** An employee can have at most this many orders waiting at once (stops spam / fake bulk orders). */
@@ -59,6 +61,10 @@ export async function createOrder(input: {
   phone?: string;
   note?: string | null;
   saveAddress: boolean;
+  /** Where the customer is (checked only for cafes with the location check on). */
+  geo?: Geo;
+  /** Team orders: the host's position was checked when the team order was started. */
+  skipGeo?: boolean;
   inTx?: (c: PoolClient, orderId: string) => Promise<void>;
 }) {
   const { user, address } = input;
@@ -72,8 +78,10 @@ export async function createOrder(input: {
 
   // All reads at the same time (one wait instead of four).
   const [cafe, menu, allCombos, profile] = await Promise.all([
-    one<{ id: string; location_id: string; is_open: boolean; accepting_orders: boolean; name: string }>(
-      `select id, location_id, (is_open and is_active) as is_open, accepting_orders, name from cafes where id = $1`,
+    one<{ id: string; location_id: string; is_open: boolean; accepting_orders: boolean; name: string;
+      lat: number | null; lng: number | null; geo_check: boolean; geo_radius_m: number }>(
+      `select id, location_id, (is_open and is_active) as is_open, accepting_orders, name, lat, lng, geo_check, geo_radius_m
+       from cafes where id = $1`,
       [input.cafeId],
     ),
     ids.length
@@ -87,6 +95,7 @@ export async function createOrder(input: {
   ]);
   if (!cafe) throw notFound('Cafe not found');
   if (!cafe.is_open || !cafe.accepting_orders) throw conflict(`${cafe.name} is not taking orders right now`);
+  if (!input.skipGeo) checkGeo(cafe, input.geo);
   if (menu.length !== ids.length) throw badRequest('Some items are not on this cafe\'s menu');
   const unavailable = menu.filter((m) => !m.is_available);
   if (unavailable.length) throw conflict(`${unavailable.map((m) => m.name).join(', ')} is out of stock`);

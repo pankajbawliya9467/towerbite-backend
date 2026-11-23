@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { randomInt } from 'node:crypto';
 import { z } from 'zod';
+import { checkGeo, GeoInput } from '../lib/geo.js';
 import { one, q, tx } from '../db.js';
 import { requireUser } from '../auth.js';
 import { badRequest, conflict, forbidden, notFound, tooMany } from '../lib/errors.js';
@@ -21,6 +22,7 @@ const MAX_OPEN_PER_HOST = 3;
 
 const CreateTeam = z.object({
   cafeId: z.string().uuid(),
+  geo: GeoInput,
   name: z.string().trim().min(1).max(60),
   deliverTo: z.string().trim().min(1).max(60),
   deliverAt: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'use HH:MM').nullable().optional(),
@@ -154,8 +156,10 @@ export async function teamRoutes(app: FastifyInstance) {
     requireEmployeePhone(user);
     const body = CreateTeam.parse(req.body);
     const [cafe, profile] = await Promise.all([
-      one<{ id: string; location_id: string; name: string; is_open: boolean; accepting_orders: boolean }>(
-        `select id, location_id, name, (is_open and is_active) as is_open, accepting_orders from cafes where id = $1`,
+      one<{ id: string; location_id: string; name: string; is_open: boolean; accepting_orders: boolean;
+        lat: number | null; lng: number | null; geo_check: boolean; geo_radius_m: number }>(
+        `select id, location_id, name, (is_open and is_active) as is_open, accepting_orders, lat, lng, geo_check, geo_radius_m
+         from cafes where id = $1`,
         [body.cafeId],
       ),
       one<{ name: string; tower: string; floor: string; company: string }>(
@@ -165,6 +169,7 @@ export async function teamRoutes(app: FastifyInstance) {
     ]);
     if (!cafe) throw notFound('Cafe not found');
     if (!cafe.is_open || !cafe.accepting_orders) throw conflict(`${cafe.name} is not taking orders right now`);
+    checkGeo(cafe, body.geo); // the host starts the team order from inside the building
     if (!profile?.tower || !profile.floor) throw badRequest('Add your tower and floor first (Profile → Desk address)');
     const code = await tx(async (c) => {
       // Checked under a per-user lock, so parallel requests can't get past the limit.
@@ -278,6 +283,7 @@ export async function teamRoutes(app: FastifyInstance) {
     const note = [`Team order "${t.name}" for ${withItems.length} people. Deliver to ${t.deliver_to}${at}.`, ...lines].join('\n');
 
     const order = await createOrder({
+      skipGeo: true,
       user,
       cafeId: t.cafe_id,
       items: withItems.flatMap((p) => p.items.map((i) => ({ menuItemId: i.menuItemId, qty: i.qty }))),

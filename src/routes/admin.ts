@@ -11,15 +11,7 @@ import { devUserId } from '../lib/devId.js';
 import { badRequest, notFound } from '../lib/errors.js';
 import { selectOrders } from '../lib/sql.js';
 import { cafesChanged } from '../realtime.js';
-
-/** Checks the file's first bytes, so a renamed script or HTML file can't be uploaded as an "image". */
-function isImage(b: Buffer) {
-  const hex = b.subarray(0, 12).toString('hex');
-  return hex.startsWith('89504e47') // png
-    || hex.startsWith('ffd8ff') // jpg
-    || hex.startsWith('47494638') // gif
-    || (hex.startsWith('52494646') && b.subarray(8, 12).toString() === 'WEBP');
-}
+import { saveImage } from '../lib/upload.js';
 
 const slug = z.string().trim().min(2).max(60).regex(/^[a-z0-9-]+$/, 'Use lowercase letters, numbers and dashes');
 const uuid = z.string().uuid();
@@ -60,7 +52,7 @@ const RESOURCES: Record<string, Resource> = {
       locationId: 'location_id', slug: 'slug', name: 'name', cuisines: 'cuisines', place: 'place', emoji: 'emoji',
       coverColor: 'cover_color', imageUrl: 'image_url', logoUrl: 'logo_url', phone: 'phone', rating: 'rating', ratingCount: 'rating_count',
       etaMin: 'eta_min', etaMax: 'eta_max', isOpen: 'is_open', acceptingOrders: 'accepting_orders', tags: 'tags', sort: 'sort',
-      isActive: 'is_active',
+      isActive: 'is_active', lat: 'lat', lng: 'lng', geoRadiusM: 'geo_radius_m', geoCheck: 'geo_check',
     },
     shape: {
       locationId: uuid, slug, name: z.string().trim().min(2).max(80), cuisines: z.string().trim().max(120),
@@ -69,6 +61,8 @@ const RESOURCES: Record<string, Resource> = {
       ratingCount: z.number().int().min(0), etaMin: z.number().int().min(1).max(120), etaMax: z.number().int().min(1).max(180),
       isOpen: z.boolean(), acceptingOrders: z.boolean(), tags: z.array(z.string().trim().toLowerCase().max(20)).max(10),
       sort: z.number().int(), isActive: z.boolean(),
+      lat: z.number().min(-90).max(90).nullable(), lng: z.number().min(-180).max(180).nullable(),
+      geoRadiusM: z.number().int().min(50).max(2000), geoCheck: z.boolean(),
     },
     required: ['locationId', 'slug', 'name'],
     filters: ['locationId'],
@@ -372,18 +366,7 @@ export async function adminRoutes(app: FastifyInstance) {
   // ---- Image upload to Supabase Storage ----
   app.post('/v1/admin/upload', async (req) => {
     await requireAdmin(req);
-    if (!supabaseConfigured()) throw badRequest('Add your Supabase keys to upload images');
-    const file = await req.file();
-    if (!file) throw badRequest('No file');
-    if (!/^image\/(png|jpe?g|webp|gif)$/.test(file.mimetype)) throw badRequest('Upload a PNG, JPG or WebP image');
-    const buf = await file.toBuffer();
-    if (!isImage(buf)) throw badRequest('That file is not a real image');
-    const ext = file.mimetype.split('/')[1].replace('jpeg', 'jpg');
-    const folder = z.string().regex(/^[a-z0-9-]{1,60}$/).catch('misc').parse((file.fields as any)?.folder?.value);
-    const path = `${folder}/${randomUUID()}.${ext}`;
-    const { error } = await supabase().storage.from(env.bucket).upload(path, buf, { contentType: file.mimetype, upsert: false });
-    if (error) throw badRequest(error.message);
-    const { data } = supabase().storage.from(env.bucket).getPublicUrl(path);
-    return { url: data.publicUrl, path };
+    return saveImage(req, (fields) =>
+      z.string().regex(/^[a-z0-9-]{1,60}$/).catch('misc').parse((fields.folder as { value?: unknown } | undefined)?.value));
   });
 }

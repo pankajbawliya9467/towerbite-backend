@@ -36,7 +36,10 @@ export async function publicRoutes(app: FastifyInstance) {
 
   app.get('/v1/locations', async () =>
     q(`select l.id, l.slug, l.name, l.area, l.city,
-         (select count(*)::int from cafes c where c.location_id = l.id and c.is_active) as "cafeCount"
+         (select count(*)::int from cafes c where c.location_id = l.id and c.is_active) as "cafeCount",
+         -- where the building is: the middle of its cafes' pins (null until a cafe has one)
+         (select avg(c.lat) from cafes c where c.location_id = l.id and c.is_active and c.lat is not null) as lat,
+         (select avg(c.lng) from cafes c where c.location_id = l.id and c.is_active and c.lng is not null) as lng
        from locations l where l.is_active order by l.city, "cafeCount" desc, l.name`),
   );
 

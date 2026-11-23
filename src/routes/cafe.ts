@@ -7,6 +7,7 @@ import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { cafesChanged, orderChanged } from '../realtime.js';
 import { pushToUser } from '../push.js';
 import { cafeWithMenu } from './public.js';
+import { saveImage } from '../lib/upload.js';
 import { pushTeamForOrder } from './team.js';
 
 type Transition = {
@@ -36,6 +37,12 @@ const TRANSITIONS: Record<string, Transition> = {
 };
 
 export async function cafeRoutes(app: FastifyInstance) {
+  /** Image upload for a cafe's own staff (lunch photos), into that cafe's folder only. */
+  app.post('/v1/cafe/upload', async (req) => {
+    const { cafeId } = await requireCafe(req);
+    return saveImage(req, () => `cafe-${cafeId}`);
+  });
+
   app.get('/v1/cafe', async (req) => {
     const { cafeId, staff } = await requireCafe(req);
     const cafe = await cafeWithMenu(cafeId);
