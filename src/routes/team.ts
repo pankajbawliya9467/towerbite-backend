@@ -155,7 +155,7 @@ export async function teamRoutes(app: FastifyInstance) {
     const body = CreateTeam.parse(req.body);
     const [cafe, profile] = await Promise.all([
       one<{ id: string; location_id: string; name: string; is_open: boolean; accepting_orders: boolean }>(
-        `select id, location_id, name, is_open, accepting_orders from cafes where id = $1`,
+        `select id, location_id, name, (is_open and is_active) as is_open, accepting_orders from cafes where id = $1`,
         [body.cafeId],
       ),
       one<{ name: string; tower: string; floor: string; company: string }>(

@@ -3,7 +3,7 @@ import { q } from '../db.js';
 export const CAFE_COLS = `c.id, c.location_id as "locationId", c.slug, c.name, c.cuisines, c.place, c.emoji,
   c.cover_color as "coverColor", c.image_url as "imageUrl", c.logo_url as "logoUrl", c.phone, c.rating::float as rating,
   c.rating_count as "ratingCount", c.eta_min as "etaMin", c.eta_max as "etaMax", c.is_open as "isOpen",
-  c.accepting_orders as "acceptingOrders", c.tags, c.sort`;
+  c.accepting_orders as "acceptingOrders", c.tags, c.sort, c.is_active as "isActive"`;
 
 export const ITEM_COLS = `i.id, i.cafe_id as "cafeId", i.category_id as "categoryId", i.name, i.description, i.price,
   i.is_veg as "isVeg", i.emoji, i.image_url as "imageUrl", i.is_available as "isAvailable",

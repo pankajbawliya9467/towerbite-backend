@@ -60,6 +60,7 @@ const RESOURCES: Record<string, Resource> = {
       locationId: 'location_id', slug: 'slug', name: 'name', cuisines: 'cuisines', place: 'place', emoji: 'emoji',
       coverColor: 'cover_color', imageUrl: 'image_url', logoUrl: 'logo_url', phone: 'phone', rating: 'rating', ratingCount: 'rating_count',
       etaMin: 'eta_min', etaMax: 'eta_max', isOpen: 'is_open', acceptingOrders: 'accepting_orders', tags: 'tags', sort: 'sort',
+      isActive: 'is_active',
     },
     shape: {
       locationId: uuid, slug, name: z.string().trim().min(2).max(80), cuisines: z.string().trim().max(120),
@@ -67,7 +68,7 @@ const RESOURCES: Record<string, Resource> = {
       imageUrl: url, logoUrl: url, phone: z.string().trim().max(20).nullable(), rating: z.number().min(0).max(5),
       ratingCount: z.number().int().min(0), etaMin: z.number().int().min(1).max(120), etaMax: z.number().int().min(1).max(180),
       isOpen: z.boolean(), acceptingOrders: z.boolean(), tags: z.array(z.string().trim().toLowerCase().max(20)).max(10),
-      sort: z.number().int(),
+      sort: z.number().int(), isActive: z.boolean(),
     },
     required: ['locationId', 'slug', 'name'],
     filters: ['locationId'],
@@ -206,6 +207,8 @@ export async function adminRoutes(app: FastifyInstance) {
 
     app.delete<{ Params: { id: string } }>(`/v1/admin/${name}/:id`, async (req) => {
       await requireAdmin(req);
+      // A cafe is never deleted (its orders, ratings and reports point to it): it is made inactive instead.
+      if (name === 'cafes') throw badRequest('Cafes cannot be deleted. Make the cafe inactive instead.');
       const before = await locationOf(name, req.params.id);
       const row = await one(`delete from ${r.table} where id = $1 returning id`, [req.params.id]);
       if (!row) throw notFound();

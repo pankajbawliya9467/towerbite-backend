@@ -104,7 +104,7 @@ export async function lunchRoutes(app: FastifyInstance) {
     return q(
       `${LUNCH_SELECT}
        join locations loc on loc.id = c.location_id
-       where loc.slug = $1 and loc.is_active and l.is_active and l.day between ${TODAY} and ${TODAY} + 6
+       where loc.slug = $1 and loc.is_active and c.is_active and l.is_active and l.day between ${TODAY} and ${TODAY} + 6
        order by l.day, c.sort, c.name, l.price`,
       [req.params.slug],
     );
@@ -140,9 +140,10 @@ export async function lunchRoutes(app: FastifyInstance) {
       await c.query(`select pg_advisory_xact_lock(hashtext($1))`, [`lunch:${user.id}`]);
       const { rows: [l] } = await c.query(
         `select l.id, l.cafe_id, l.day, l.price, l.plates, l.slots, l.name,
-           (l.is_active and (l.day + l.closes_at) > ${NOW}) as bookable,
+           (l.is_active and (l.day + l.closes_at) > ${NOW}
+             and (select c.is_active from cafes c where c.id = l.cafe_id)) as bookable,
            (select coalesce(sum(qty), 0)::int from lunch_bookings b where b.lunch_id = l.id and b.status <> 'cancelled') as booked
-         from lunch_menus l where l.id = $1 for update`,
+         from lunch_menus l where l.id = $1 for update of l`,
         [body.lunchId],
       );
       if (!l) throw notFound('Lunch not found');

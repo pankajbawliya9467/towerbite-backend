@@ -73,7 +73,7 @@ export async function createOrder(input: {
   // All reads at the same time (one wait instead of four).
   const [cafe, menu, allCombos, profile] = await Promise.all([
     one<{ id: string; location_id: string; is_open: boolean; accepting_orders: boolean; name: string }>(
-      `select id, location_id, is_open, accepting_orders, name from cafes where id = $1`,
+      `select id, location_id, (is_open and is_active) as is_open, accepting_orders, name from cafes where id = $1`,
       [input.cafeId],
     ),
     ids.length

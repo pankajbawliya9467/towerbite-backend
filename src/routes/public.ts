@@ -36,7 +36,7 @@ export async function publicRoutes(app: FastifyInstance) {
 
   app.get('/v1/locations', async () =>
     q(`select l.id, l.slug, l.name, l.area, l.city,
-         (select count(*)::int from cafes c where c.location_id = l.id) as "cafeCount"
+         (select count(*)::int from cafes c where c.location_id = l.id and c.is_active) as "cafeCount"
        from locations l where l.is_active order by l.city, "cafeCount" desc, l.name`),
   );
 
@@ -68,7 +68,7 @@ export async function publicRoutes(app: FastifyInstance) {
       }
       return q(
         `select ${CAFE_COLS} from cafes c join locations l on l.id = c.location_id
-         where l.slug = $1 ${extra} order by c.is_open desc, c.sort, c.name`,
+         where l.slug = $1 and c.is_active ${extra} order by c.is_open desc, c.sort, c.name`,
         params,
       );
     },
@@ -78,7 +78,7 @@ export async function publicRoutes(app: FastifyInstance) {
     q(
       `select ${ITEM_COLS}, json_build_object('id', c.id, 'slug', c.slug, 'name', c.name) as cafe
        from menu_items i join cafes c on c.id = i.cafe_id join locations l on l.id = c.location_id
-       where l.slug = $1 and i.is_popular and i.is_available and c.is_open
+       where l.slug = $1 and c.is_active and i.is_popular and i.is_available and c.is_open
        order by c.sort, i.sort limit 8`,
       [req.params.slug],
     ),
@@ -86,14 +86,18 @@ export async function publicRoutes(app: FastifyInstance) {
 
   app.get<{ Params: { slug: string; cafeSlug: string } }>('/v1/locations/:slug/cafes/:cafeSlug', async (req) => {
     const row = await one<{ id: string }>(
-      `select c.id from cafes c join locations l on l.id = c.location_id where l.slug = $1 and c.slug = $2`,
+      `select c.id from cafes c join locations l on l.id = c.location_id where l.slug = $1 and c.slug = $2 and c.is_active`,
       [req.params.slug, req.params.cafeSlug],
     );
     if (!row) throw notFound('Cafe not found');
     return cafeWithMenu(row.id);
   });
 
-  app.get<{ Params: { id: string } }>('/v1/cafes/:id', async (req) => cafeWithMenu(req.params.id));
+  app.get<{ Params: { id: string } }>('/v1/cafes/:id', async (req) => {
+    const menu = await cafeWithMenu(req.params.id);
+    if (!(menu as { isActive?: boolean }).isActive) throw notFound('Cafe not found'); // inactive: hidden from customers
+    return menu;
+  });
 
   /** Search box: matching dishes (with their cafe) and matching cafes in one location. */
   app.get<{ Params: { slug: string }; Querystring: { q?: string; veg?: string; maxPrice?: string } }>(
@@ -115,13 +119,13 @@ export async function publicRoutes(app: FastifyInstance) {
           `select ${ITEM_COLS}, json_build_object('id', c.id, 'slug', c.slug, 'name', c.name, 'etaMin', c.eta_min, 'etaMax', c.eta_max,
              'coverColor', c.cover_color, 'isOpen', c.is_open, 'acceptingOrders', c.accepting_orders) as cafe
            from menu_items i join cafes c on c.id = i.cafe_id join locations l on l.id = c.location_id
-           where l.slug = $1 and (i.name ilike $2 or i.description ilike $2) ${extra}
+           where l.slug = $1 and c.is_active and (i.name ilike $2 or i.description ilike $2) ${extra}
            order by (c.is_open and c.accepting_orders) desc, i.is_available desc, i.is_popular desc, i.name limit 30`,
           params,
         ),
         q(
           `select ${CAFE_COLS} from cafes c join locations l on l.id = c.location_id
-           where l.slug = $1 and (c.name ilike $2 or c.cuisines ilike $2) order by c.is_open desc, c.sort, c.name limit 10`,
+           where l.slug = $1 and c.is_active and (c.name ilike $2 or c.cuisines ilike $2) order by c.is_open desc, c.sort, c.name limit 10`,
           [req.params.slug, like],
         ),
       ]);

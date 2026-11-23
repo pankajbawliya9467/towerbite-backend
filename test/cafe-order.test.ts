@@ -35,3 +35,27 @@ test('admin reorders cafes; public list follows; checks', async () => {
   // put the original order back
   await call('PUT', `/v1/admin/locations/${loc.id}/cafe-order`, { cafeIds: cafes.map((c) => c.id) });
 });
+
+test('inactive cafe: hidden from customers, no orders, cannot be deleted, comes back when active', async () => {
+  const [c] = await q<{ id: string; slug: string; loc: string }>(
+    `select c.id, l.slug as loc, c.slug from cafes c join locations l on l.id = c.location_id where c.is_open and c.accepting_orders and c.is_active limit 1`);
+  const [item] = await q<{ id: string }>(`select id from menu_items where cafe_id = $1 and is_available limit 1`, [c.id]);
+
+  assert.equal((await call('DELETE', `/v1/admin/cafes/${c.id}`)).status, 400, 'delete is refused');
+  assert.equal((await call('PATCH', `/v1/admin/cafes/${c.id}`, { isActive: false })).status, 200);
+  try {
+    const list = (await call('GET', `/v1/locations/${c.loc}/cafes`, undefined, {})).body as { id: string }[];
+    assert.ok(!list.some((x) => x.id === c.id), 'not in the app list');
+    assert.equal((await call('GET', `/v1/cafes/${c.id}`, undefined, {})).status, 404);
+    assert.equal((await call('GET', `/v1/locations/${c.loc}/cafes/${c.slug}`, undefined, {})).status, 404);
+    const order = await call('POST', '/v1/orders', {
+      cafeId: c.id, items: [{ menuItemId: item.id, qty: 1 }], address: { tower: 'A', floor: '1', company: 'X', desk: '1' },
+    }, { authorization: 'Bearer dev:+919800000111' });
+    assert.equal(order.status, 409, JSON.stringify(order.body));
+    const adminList = (await call('GET', '/v1/admin/cafes')).body as { id: string; isActive: boolean }[];
+    assert.equal(adminList.find((x) => x.id === c.id)?.isActive, false, 'still in CRM, marked inactive');
+  } finally {
+    await call('PATCH', `/v1/admin/cafes/${c.id}`, { isActive: true });
+  }
+  assert.ok(((await call('GET', `/v1/locations/${c.loc}/cafes`, undefined, {})).body as { id: string }[]).some((x) => x.id === c.id));
+});
