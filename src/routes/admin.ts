@@ -214,6 +214,27 @@ export async function adminRoutes(app: FastifyInstance) {
     });
   }
 
+  /**
+   * Order of the cafes in one building (app + website list): the ids from top to bottom. Open cafes still
+   * show before closed ones; within each group this order is used.
+   */
+  app.put<{ Params: { id: string } }>('/v1/admin/locations/:id/cafe-order', async (req) => {
+    await requireAdmin(req);
+    const loc = uuid.parse(req.params.id);
+    const { cafeIds } = z.object({ cafeIds: z.array(uuid).min(1).max(500) }).parse(req.body);
+    if (new Set(cafeIds).size !== cafeIds.length) throw badRequest('A cafe is listed twice');
+    const rows = await q<{ id: string }>(
+      `update cafes c set sort = x.pos
+       from unnest($2::uuid[]) with ordinality as x(id, pos)
+       where c.id = x.id and c.location_id = $1
+       returning c.id`,
+      [loc, cafeIds],
+    );
+    if (rows.length !== cafeIds.length) throw badRequest('Some of these cafes are not in this building');
+    await cafesChanged([loc]);
+    return { ok: true };
+  });
+
   // ---- Staff (cafe logins and admins) ----
   app.get('/v1/admin/staff', async (req) => {
     await requireAdmin(req);
