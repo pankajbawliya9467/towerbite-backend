@@ -207,11 +207,42 @@ export async function lunchRoutes(app: FastifyInstance) {
     );
   });
 
+  /**
+   * Lunches this cafe posted before, one per dish name (its latest one), with how often it was posted,
+   * so it can be posted again in a click ("Post a past lunch" in the CRM).
+   */
+  app.get('/v1/cafe/lunch/past', async (req) => {
+    const { cafeId } = await requireCafe(req);
+    const picks = await q<{ id: string; times: number }>(
+      `select id, times from (
+         select l.id, count(*) over (partition by lower(btrim(l.name)))::int as times,
+           row_number() over (partition by lower(btrim(l.name)) order by l.day desc, l.created_at desc) as rn,
+           l.day, l.created_at
+         from lunch_menus l where l.cafe_id = $1
+       ) x where rn = 1 order by day desc, created_at desc limit 60`,
+      [cafeId],
+    );
+    if (!picks.length) return [];
+    const rows = await q<{ id: string }>(`${LUNCH_SELECT} where l.id = any($1::uuid[]) order by l.day desc`, [picks.map((p) => p.id)]);
+    const times = new Map(picks.map((p) => [p.id, p.times]));
+    return rows.map((r) => ({ ...r, timesPosted: times.get(r.id) ?? 1 }));
+  });
+
   app.post('/v1/cafe/lunch', async (req, reply) => {
     const { cafeId } = await requireCafe(req);
     const body = LunchInput.parse(req.body);
-    const days = [...new Set([body.day, ...body.alsoOn])];
-    await checkDays(days);
+    const wanted = [...new Set([body.day, ...body.alsoOn])];
+    await checkDays(wanted);
+    // Days that already have this dish are skipped (posting the same lunch twice by mistake).
+    const taken = new Set(
+      (await q<{ d: string }>(
+        `select to_char(day, 'YYYY-MM-DD') as d from lunch_menus
+         where cafe_id = $1 and lower(btrim(name)) = lower(btrim($2)) and day = any($3::date[])`,
+        [cafeId, body.name, wanted],
+      )).map((r) => r.d),
+    );
+    const days = wanted.filter((d) => !taken.has(d));
+    if (!days.length) throw conflict(`${body.name} is already posted on ${wanted.length === 1 ? 'that day' : 'those days'}`);
     const rows = await q<{ id: string }>(
       `insert into lunch_menus (cafe_id, day, name, items, price, is_veg, plates, closes_at, cancel_until, slots, image_url)
        select $1, d, $3, $4, $5, $6, $7, $8, $9, $10, $11 from unnest($2::date[]) d returning id`,
