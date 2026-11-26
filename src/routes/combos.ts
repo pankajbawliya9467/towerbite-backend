@@ -42,8 +42,8 @@ async function checkCombo(cafeId: string, body: z.infer<typeof ComboBody>) {
   if (body.startTime && body.startTime === body.endTime) throw badRequest('Start and end time cannot be the same');
   const ids = [...new Set(body.items.map((i) => i.menuItemId))];
   if (ids.length !== body.items.length) throw badRequest('Each item only once (use the quantity)');
-  const menu = await q<{ id: string; price: number }>(`select id, price from menu_items where cafe_id = $1 and id = any($2::uuid[])`, [cafeId, ids]);
-  if (menu.length !== ids.length) throw badRequest('Pick items from this cafe\'s menu');
+  const menu = await q<{ id: string; price: number }>(`select id, price from menu_items where cafe_id = $1 and id = any($2::uuid[]) and is_active`, [cafeId, ids]);
+  if (menu.length !== ids.length) throw badRequest('Pick items from this cafe\'s menu (a hidden product can\'t be in a combo: show it again first)');
   if (body.items.length === 1 && body.items[0].qty === 1) throw badRequest('A combo needs at least two things');
   const mrp = body.items.reduce((s, i) => s + menu.find((m) => m.id === i.menuItemId)!.price * i.qty, 0);
   if (body.price > mrp) throw badRequest(`Combo price can't be more than the items cost separately (₹${mrp})`);
@@ -78,7 +78,7 @@ export async function comboRoutes(app: FastifyInstance) {
   });
 
   app.post('/v1/cafe/combos', async (req, reply) => {
-    const { cafeId } = await requireCafe(req);
+    const { cafeId } = await requireCafe(req, 'menu.add');
     const body = ComboBody.parse(req.body);
     const days = await checkCombo(cafeId, body);
     const count = await one<{ n: number }>(`select count(*)::int as n from combos where cafe_id = $1`, [cafeId]);
@@ -98,7 +98,7 @@ export async function comboRoutes(app: FastifyInstance) {
   });
 
   app.patch<{ Params: { id: string } }>('/v1/cafe/combos/:id', async (req) => {
-    const { cafeId } = await requireCafe(req);
+    const { cafeId } = await requireCafe(req, 'menu.edit');
     z.string().uuid().parse(req.params.id);
     const raw = (req.body ?? {}) as Record<string, unknown>;
     // Just switching it on/off
@@ -123,7 +123,7 @@ export async function comboRoutes(app: FastifyInstance) {
   });
 
   app.delete<{ Params: { id: string } }>('/v1/cafe/combos/:id', async (req) => {
-    const { cafeId } = await requireCafe(req);
+    const { cafeId } = await requireCafe(req, 'menu.delete');
     z.string().uuid().parse(req.params.id);
     const row = await one(`delete from combos where id = $1 and cafe_id = $2 returning id`, [req.params.id, cafeId]);
     if (!row) throw notFound('Combo not found');
@@ -146,7 +146,7 @@ export async function comboRoutes(app: FastifyInstance) {
        select p.a, p.b, ia.name as an, ib.name as bn, ia.price as ap, ib.price as bp, p.together,
          (select count(*)::int from lines l where l.menu_item_id = p.a) as with_a
        from pairs p join menu_items ia on ia.id = p.a join menu_items ib on ib.id = p.b
-       where ia.is_available and ib.is_available
+       where ia.is_available and ib.is_available and ia.is_active and ib.is_active
          and not exists (select 1 from combo_items c1 join combo_items c2 on c2.combo_id = c1.combo_id
                          where c1.menu_item_id = p.a and c2.menu_item_id = p.b)
        order by p.together desc, ia.price desc limit 1`,

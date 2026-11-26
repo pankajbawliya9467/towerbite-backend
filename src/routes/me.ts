@@ -65,7 +65,11 @@ export async function meRoutes(app: FastifyInstance) {
   app.post('/v1/me/push-token', async (req) => {
     const user = await requireUser(req);
     const { token, platform } = z
-      .object({ token: z.string().min(10).max(300), platform: z.string().max(20).default('expo') })
+      .object({
+        // Only real Expo push tokens (stops junk rows that slow down every announcement).
+        token: z.string().max(300).regex(/^Expo(nent)?PushToken\[[A-Za-z0-9_-]{10,200}\]$/, 'Not a push token'),
+        platform: z.string().max(20).default('expo'),
+      })
       .parse(req.body);
     await q(
       `insert into push_tokens (token, user_id, platform) values ($1, $2, $3)
@@ -73,6 +77,12 @@ export async function meRoutes(app: FastifyInstance) {
        -- a token stays with its user until they sign out (which deletes it), so it can't be taken over
        where push_tokens.user_id = excluded.user_id or push_tokens.created_at < now() - interval '30 days'`,
       [token, user.id, platform],
+    );
+    // A person has a few phones at most: keep their 10 newest tokens.
+    await q(
+      `delete from push_tokens where user_id = $1 and token not in
+         (select token from push_tokens where user_id = $1 order by created_at desc limit 10)`,
+      [user.id],
     );
     return { ok: true };
   });

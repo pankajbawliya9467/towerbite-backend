@@ -86,7 +86,7 @@ export async function createOrder(input: {
     ),
     ids.length
       ? q<{ id: string; name: string; emoji: string; price: number; is_available: boolean }>(
-          `select id, name, emoji, price, is_available from menu_items where cafe_id = $1 and id = any($2::uuid[])`,
+          `select id, name, emoji, price, is_available from menu_items where cafe_id = $1 and id = any($2::uuid[]) and is_active`,
           [input.cafeId, ids],
         )
       : Promise.resolve([]),

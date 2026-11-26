@@ -1,6 +1,7 @@
 /**
  * Lunch pre-booking and team orders. Needs DEV_AUTH=true and a seeded database (npm run db:seed). Run: npm test
  */
+process.env.QUIET_HOURS = 'off';
 process.env.SUPABASE_URL = 'http://realtime.test';
 process.env.SUPABASE_SERVICE_ROLE_KEY = 'test-service-key';
 
@@ -231,7 +232,7 @@ test('admin sends a custom notification to a building, a company or one person; 
   assert.equal((await call('POST', '/v1/admin/notifications', admin, { ...body, audience: { type: 'user', phone: '9000000000' } })).status, 400, 'nobody to send to');
   assert.equal((await call('POST', '/v1/admin/notifications', admin, { ...body, title: '' })).status, 400);
   const history = await call('GET', '/v1/admin/notifications', admin);
-  assert.equal(history.body[0].title, 'Diwali offer');
+  assert.equal(history.body.rows[0].title, 'Diwali offer');
 });
 
 test('sub-categories: one level, same cafe, and the menu sends parentId', async () => {

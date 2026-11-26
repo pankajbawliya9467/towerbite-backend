@@ -1,11 +1,12 @@
 import pg from 'pg';
 import { env } from './env.js';
 
-// Supabase requires SSL; local Postgres usually does not.
-const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(env.databaseUrl) || env.databaseUrl.includes('host=/');
+// Hosted databases need SSL; local Postgres (or your own server on a private network with DATABASE_SSL=false) does not.
+const isLocal = /@(localhost|127\.0\.0\.1)[:/]/.test(env.databaseUrl) || env.databaseUrl.includes('host=/')
+  || process.env.DATABASE_SSL?.trim().toLowerCase() === 'false';
 
-// With DATABASE_CA_CERT set (Supabase → Database → SSL Configuration → Download certificate) the server's
-// certificate is fully verified. Without it the connection is still encrypted but not verified.
+// With DATABASE_CA_CERT set (the database provider's CA certificate) the server's certificate is fully
+// verified. Without it the connection is still encrypted but not verified.
 if (!isLocal && !env.databaseCa && env.production) {
   console.warn('DATABASE_CA_CERT is not set: the database connection is encrypted but its certificate is not verified.');
 }
@@ -15,7 +16,7 @@ export const pool = new pg.Pool({
   connectionString: env.databaseUrl.replace(/([?&])sslmode=[^&]*&?/, '$1').replace(/[?&]$/, ''),
   ssl: isLocal ? undefined : env.databaseCa ? { ca: env.databaseCa, rejectUnauthorized: true } : { rejectUnauthorized: false },
   max: 10,
-  // Keep connections open. A new connection to Supabase (TCP + TLS + auth) costs ~1 s, and with the
+  // Keep connections open. A new connection to a hosted database (TCP + TLS + auth) costs ~1 s, and with the
   // default 10 s idle timeout almost every click on a quiet app was paying it.
   idleTimeoutMillis: 0,
   keepAlive: true,

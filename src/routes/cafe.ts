@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { one, q } from '../db.js';
-import { requireCafe } from '../auth.js';
+import { can, noAccess, requireCafe, type Permission } from '../auth.js';
 import { ACTIVE_STATUSES, selectOrder, selectOrders, type OrderStatus } from '../lib/sql.js';
 import { badRequest, conflict, notFound } from '../lib/errors.js';
 import { cafesChanged, orderChanged } from '../realtime.js';
@@ -9,6 +9,7 @@ import { pushToUser } from '../push.js';
 import { cafeWithMenu } from './public.js';
 import { saveImage } from '../lib/upload.js';
 import { pushTeamForOrder } from './team.js';
+import { day, like, paging, Where } from '../lib/paging.js';
 
 type Transition = {
   from: OrderStatus;
@@ -50,7 +51,8 @@ export async function cafeRoutes(app: FastifyInstance) {
   });
 
   app.patch('/v1/cafe', async (req) => {
-    const { cafeId } = await requireCafe(req);
+    const { cafeId, staff } = await requireCafe(req);
+    if (staff.role === 'super_admin' && !can(staff, 'cafes.openclose')) throw noAccess('cafes.openclose');
     const body = z.object({ acceptingOrders: z.boolean().optional(), isOpen: z.boolean().optional() }).parse(req.body);
     const row = await one<{ location_id: string }>(
       `update cafes set accepting_orders = coalesce($2, accepting_orders), is_open = coalesce($3, is_open)
@@ -63,8 +65,31 @@ export async function cafeRoutes(app: FastifyInstance) {
   });
 
   /** status=active (default) → New / Preparing / Out for delivery. status=history → finished orders for a day. */
-  app.get<{ Querystring: { status?: 'active' | 'history'; date?: string } }>('/v1/cafe/orders', async (req) => {
+  type CafeOrdersQuery = {
+    status?: 'active' | 'history'; date?: string; from?: string; to?: string; state?: string; search?: string; page?: string; pageSize?: string;
+  };
+  app.get<{ Querystring: CafeOrdersQuery }>('/v1/cafe/orders', async (req) => {
     const { cafeId } = await requireCafe(req);
+    // History with `page`: a date range, status and search, one page at a time.
+    if (req.query.status === 'history' && req.query.page !== undefined) {
+      const qs = req.query;
+      const w = new Where([cafeId]);
+      w.add('o.cafe_id = $1');
+      const from = day(qs.from, 'start date');
+      const to = day(qs.to, 'end date');
+      w.add(`(o.created_at at time zone 'Asia/Kolkata')::date >= coalesce(?::date, (now() at time zone 'Asia/Kolkata')::date)`, from);
+      w.add(`(o.created_at at time zone 'Asia/Kolkata')::date <= coalesce(?::date, (now() at time zone 'Asia/Kolkata')::date)`, to ?? from);
+      if (qs.state) w.add('o.status = ?', z.enum(['placed', 'preparing', 'out_for_delivery', 'delivered', 'rejected', 'cancelled']).parse(qs.state));
+      const term = qs.search?.trim();
+      if (term) {
+        const no = /^#?\d{1,9}$/.test(term) ? Number(term.replace('#', '')) : -1;
+        w.add('(o.order_no = ? or o.customer_name ilike ? or o.customer_phone ilike ?)', no, like(term), like(term));
+      }
+      const pg = paging(qs);
+      const [count] = await q<{ n: number }>(`select count(*)::int as n from orders o where ${w.sql}`, w.params);
+      const rows = await selectOrders(w.sql, w.params, `order by o.created_at desc limit ${pg.limit} offset ${pg.offset}`);
+      return { rows, total: count.n, page: pg.page, pageSize: pg.pageSize };
+    }
     if (req.query.status === 'history') {
       const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date ?? '') ? req.query.date : null;
       return selectOrders(
@@ -202,16 +227,31 @@ export async function cafeRoutes(app: FastifyInstance) {
     return cafeWithMenu(cafeId);
   });
 
+  /**
+   * The cafe's own quick switches on a product: in stock (today), popular (★ on the menu), hidden (not shown to
+   * customers at all until shown again). An admin working in the cafe panel needs the matching menu tick.
+   */
   app.patch<{ Params: { id: string } }>('/v1/cafe/menu-items/:id', async (req) => {
-    const { cafeId } = await requireCafe(req);
-    const { isAvailable } = z.object({ isAvailable: z.boolean() }).parse(req.body);
-    const row = await one<{ location_id: string }>(
-      `update menu_items i set is_available = $3 from cafes c
-       where i.id = $1 and i.cafe_id = $2 and c.id = i.cafe_id returning c.location_id`,
-      [req.params.id, cafeId, isAvailable],
+    const body = z
+      .object({ isAvailable: z.boolean().optional(), isPopular: z.boolean().optional(), isActive: z.boolean().optional() })
+      .refine((b) => b.isAvailable !== undefined || b.isPopular !== undefined || b.isActive !== undefined, 'Nothing to change')
+      .parse(req.body);
+    const needs: Permission[] = [];
+    if (body.isAvailable !== undefined) needs.push('menu.soldout');
+    if (body.isPopular !== undefined) needs.push('menu.edit');
+    if (body.isActive !== undefined) needs.push('menu.delete');
+    const { cafeId, staff } = await requireCafe(req);
+    for (const p of needs) if (staff.role === 'super_admin' && !can(staff, p)) throw noAccess(p);
+    z.string().uuid().parse(req.params.id);
+    const row = await one<{ location_id: string; is_available: boolean; is_popular: boolean; is_active: boolean }>(
+      `update menu_items i set is_available = coalesce($3, i.is_available), is_popular = coalesce($4, i.is_popular),
+         is_active = coalesce($5, i.is_active)
+       from cafes c where i.id = $1 and i.cafe_id = $2 and c.id = i.cafe_id
+       returning c.location_id, i.is_available, i.is_popular, i.is_active`,
+      [req.params.id, cafeId, body.isAvailable ?? null, body.isPopular ?? null, body.isActive ?? null],
     );
     if (!row) throw notFound('Item not found');
     await cafesChanged([row.location_id]);
-    return { id: req.params.id, isAvailable };
+    return { id: req.params.id, isAvailable: row.is_available, isPopular: row.is_popular, isActive: row.is_active };
   });
 }

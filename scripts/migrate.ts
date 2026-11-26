@@ -25,11 +25,13 @@ if (seed) {
   if (env.devAuth) {
     const cafe = await pool.query(`select id from cafes where slug = 'krunchy-kafe' limit 1`);
     await pool.query(
-      `insert into staff (user_id, role, cafe_id, name, email) values
-         ($1, 'super_admin', null, 'Admin', 'admin@towerbites.dev'),
-         ($2, 'cafe_staff', $3, 'Krunchy Kafe counter', 'cafe@towerbites.dev')
+      `insert into admins (id, name, email, is_super) values ($1, 'Admin', 'admin@towerbites.dev', true) on conflict (id) do nothing`,
+      [devUserId('admin@towerbites.dev')],
+    );
+    await pool.query(
+      `insert into staff (user_id, role, cafe_id, name, email) values ($1, 'cafe_staff', $2, 'Krunchy Kafe counter', 'cafe@towerbites.dev')
        on conflict (user_id) do nothing`,
-      [devUserId('admin@towerbites.dev'), devUserId('cafe@towerbites.dev'), cafe.rows[0]?.id],
+      [devUserId('cafe@towerbites.dev'), cafe.rows[0]?.id],
     );
     console.log('✓ Dev logins: admin@towerbites.dev (admin), cafe@towerbites.dev (Krunchy Kafe)');
   }

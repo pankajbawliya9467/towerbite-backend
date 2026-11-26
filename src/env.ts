@@ -30,8 +30,9 @@ export const env = {
   corsOrigins: (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   databaseUrl: req('DATABASE_URL'),
   databaseCa: databaseCa(),
-  supabaseUrl: process.env.SUPABASE_URL ?? '',
-  supabaseServiceKey: process.env.SUPABASE_SERVICE_ROLE_KEY ?? '',
+  // Hosted storage (photos) + old-login fallback. New names first; the old SUPABASE_* names still work.
+  supabaseUrl: process.env.STORAGE_URL || process.env.SUPABASE_URL || '',
+  supabaseServiceKey: process.env.STORAGE_SERVICE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || '',
   bucket: process.env.STORAGE_BUCKET ?? 'menu-images',
   production,
   devAuth: process.env.DEV_AUTH === 'true' && !production,
@@ -68,13 +69,22 @@ function testLoginConfig() {
     .map((s) => (s.startsWith('+') ? s : s.length === 10 ? `+91${s}` : `+${s}`));
   const otp = (process.env.TEST_LOGIN_OTP ?? '123456').trim();
   if (!/^\d{6}$/.test(otp)) throw new Error('TEST_LOGIN_OTP must be 6 digits');
+  // In production a guessable test code would open those accounts to anyone: test login is switched off
+  // (the server still starts, so a deploy never goes down because of it).
+  const weak = /^(\d)\1{5}$/.test(otp) || '123456 654321 012345 123123'.split(' ').includes(otp);
+  if (production && numbers.length && weak) {
+    console.error('TEST_LOGIN_OTP is a guessable code (e.g. 123456): test login is OFF in production. Set a random 6-digit TEST_LOGIN_OTP.');
+    return { numbers: [] as string[], otp, allUntil: null as number | null };
+  }
   let allUntil: number | null = null;
   const until = (process.env.TEST_LOGIN_ALL_UNTIL ?? '').trim();
   if (until) {
     const t = Date.parse(`${until}T23:59:59+05:30`);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(until) || Number.isNaN(t)) throw new Error('TEST_LOGIN_ALL_UNTIL must be a date like 2026-12-05');
     if (t - Date.now() > 45 * 86400_000) console.warn('TEST_LOGIN_ALL_UNTIL is more than 45 days away: ignored.');
-    else if (t > Date.now()) {
+    else if (production && process.env.ALLOW_OPEN_TEST_LOGIN !== 'true') {
+      console.error('TEST_LOGIN_ALL_UNTIL is ignored in production (anyone could open any account). Set ALLOW_OPEN_TEST_LOGIN=true only for a closed test with no real customers.');
+    } else if (t > Date.now()) {
       allUntil = t;
       console.warn(`TEST LOGIN IS OPEN FOR ALL NUMBERS until ${until}: anyone can log in to any account with the test code.`);
     }

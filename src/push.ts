@@ -1,5 +1,12 @@
 import { q } from './db.js';
 
+/** With Expo "Enhanced push security" on, only requests with this token can send to our app's devices. */
+const headers = () => ({
+  'Content-Type': 'application/json',
+  Accept: 'application/json',
+  ...(process.env.EXPO_ACCESS_TOKEN ? { Authorization: `Bearer ${process.env.EXPO_ACCESS_TOKEN}` } : {}),
+});
+
 /**
  * Sends an Expo push notification to every device of a user. Failures are logged, never thrown.
  * Tokens Expo reports as no longer registered (app uninstalled) are removed.
@@ -10,7 +17,7 @@ export async function pushToUser(userId: string, title: string, body: string, da
   try {
     const res = await fetch('https://exp.host/--/api/v2/push/send', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: headers(),
       body: JSON.stringify(
         // channelId matches the Android channel the app creates (src/lib/push.ts), so it shows as a heads-up alert.
         tokens.map((t) => ({ to: t.token, title, body, data, sound: 'default', priority: 'high', channelId: 'orders' })),
@@ -40,7 +47,7 @@ export async function pushToUsers(userIds: string[], title: string, body: string
     try {
       const res = await fetch('https://exp.host/--/api/v2/push/send', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        headers: headers(),
         body: JSON.stringify(batch.map((t) => ({ to: t.token, title, body, data, sound: 'default', priority: 'high', channelId: 'orders' }))),
         signal: AbortSignal.timeout(15000),
       });

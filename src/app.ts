@@ -11,10 +11,13 @@ import { meRoutes } from './routes/me.js';
 import { orderRoutes } from './routes/orders.js';
 import { cafeRoutes } from './routes/cafe.js';
 import { adminRoutes } from './routes/admin.js';
+import { adminsRoutes } from './routes/admins.js';
 import { reportRoutes } from './routes/reports.js';
 import { lunchRoutes } from './routes/lunch.js';
 import { teamRoutes } from './routes/team.js';
 import { notifyRoutes } from './routes/notify.js';
+import { aiSettingsRoutes } from './routes/aiSettings.js';
+import { adminReportRoutes } from './routes/adminReports.js';
 import { comboRoutes } from './routes/combos.js';
 import { accountRoutes } from './routes/account.js';
 import { authOtpRoutes } from './routes/authOtp.js';
@@ -23,7 +26,19 @@ import { liveRoutes } from './routes/live.js';
 
 export async function buildApp() {
   const app = Fastify({
-    logger: { level: process.env.LOG_LEVEL ?? 'info', redact: ['req.headers.authorization'] },
+    logger: {
+      level: process.env.LOG_LEVEL ?? 'info',
+      redact: ['req.headers.authorization'],
+      serializers: {
+        // Team order codes work like an invitation: keep them out of the logs.
+        req: (req) => ({
+          method: req.method,
+          url: req.url.replace(/(team-orders\/)[A-Za-z0-9]{8}/, '$1********'),
+          host: req.host,
+          remoteAddress: req.ip,
+        }),
+      },
+    },
     // Trust only the known proxy hops (TRUST_PROXY), so X-Forwarded-For can't be faked to dodge rate limits.
     trustProxy: env.trustProxy ? (_addr: string, hop: number) => hop < env.trustProxy : false,
     bodyLimit: 100 * 1024,
@@ -69,6 +84,7 @@ export async function buildApp() {
   await app.register(orderRoutes);
   await app.register(cafeRoutes);
   await app.register(adminRoutes);
+  await app.register(adminsRoutes);
   await app.register(reportRoutes);
   await app.register(lunchRoutes);
   await app.register(comboRoutes);
@@ -78,5 +94,7 @@ export async function buildApp() {
   await app.register(liveRoutes);
   await app.register(teamRoutes);
   await app.register(notifyRoutes);
+  await app.register(aiSettingsRoutes);
+  await app.register(adminReportRoutes);
   return app;
 }

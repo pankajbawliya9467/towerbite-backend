@@ -1,9 +1,10 @@
 import type { FastifyInstance } from 'fastify';
 import websocket from '@fastify/websocket';
 import { one } from '../db.js';
-import { getStaff, userFromBearer, type AuthUser } from '../auth.js';
+import { can, getStaff, userFromBearer, type AuthUser } from '../auth.js';
 import { listen } from '../liveHub.js';
 
+const RECHECK_MS = Number(process.env.LIVE_RECHECK_MS) || 5 * 60_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Same rules as the old private Supabase channels (db/002_realtime_security.sql). */
@@ -15,7 +16,7 @@ async function canListen(user: AuthUser, topic: string) {
   if (kind === 'order') return !!(await one(`select 1 from orders where id = $1 and user_id = $2`, [id, user.id]));
   if (kind === 'cafe') {
     const staff = await getStaff(user.id);
-    return !!staff && (staff.role === 'super_admin' || staff.cafeId === id);
+    return !!staff && (can(staff, 'cafes.board') || staff.cafeId === id);
   }
   return false;
 }
@@ -29,11 +30,30 @@ export async function liveRoutes(app: FastifyInstance) {
 
   app.get('/v1/live', { websocket: true }, (socket) => {
     let user: AuthUser | null = null;
+    let token = '';
     let anon = false; // website visitor without a login: only `location:` topics
     const subs = new Map<string, () => void>();
     const send = (o: unknown) => socket.readyState === 1 && socket.send(JSON.stringify(o));
     const authTimer = setTimeout(() => !user && !anon && socket.close(4001, 'auth required'), 10_000);
     const ping = setInterval(() => socket.readyState === 1 && socket.ping(), 25_000);
+    // Every few minutes the login and each topic are checked again: after a logout, a password change or an
+    // admin being turned off, the socket stops getting that person's pings.
+    const recheck = setInterval(async () => {
+      if (!user) return;
+      try {
+        const again = await userFromBearer(token);
+        if (again.id !== user.id) throw new Error('changed');
+      } catch {
+        return socket.close(4001, 'session ended');
+      }
+      for (const topic of [...subs.keys()]) {
+        if (!(await canListen(user, topic).catch(() => false))) {
+          subs.get(topic)?.();
+          subs.delete(topic);
+          send({ type: 'denied', topic });
+        }
+      }
+    }, RECHECK_MS);
 
     socket.on('message', async (raw: Buffer) => {
       let msg: { type?: string; token?: string; topic?: string };
@@ -50,6 +70,7 @@ export async function liveRoutes(app: FastifyInstance) {
       if (msg.type === 'auth' && typeof msg.token === 'string') {
         try {
           user = await userFromBearer(msg.token);
+          token = msg.token;
           anon = false;
           send({ type: 'ready' });
         } catch {
@@ -71,6 +92,7 @@ export async function liveRoutes(app: FastifyInstance) {
     socket.on('close', () => {
       clearTimeout(authTimer);
       clearInterval(ping);
+      clearInterval(recheck);
       for (const off of subs.values()) off();
       subs.clear();
     });

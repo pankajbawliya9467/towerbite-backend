@@ -32,13 +32,14 @@ export const COMBO_IN_WINDOW = `(
 )`;
 
 /** Combos of one cafe with their items. `activeOnly` for customers. */
-export async function cafeCombos(cafeId: string, activeOnly: boolean): Promise<ComboRow[]> {
+/** `forCustomers`: also leave out combos with a product the cafe has hidden. */
+export async function cafeCombos(cafeId: string, activeOnly: boolean, forCustomers = false): Promise<ComboRow[]> {
   const rows = await q<ComboRow & { inWindow: boolean }>(
     `select x.id, x.cafe_id as "cafeId", x.name, x.description, x.price, x.emoji, x.image_url as "imageUrl",
        to_char(x.start_time, 'HH24:MI') as "startTime", to_char(x.end_time, 'HH24:MI') as "endTime",
        x.days, x.is_active as "isActive", x.sort, ${COMBO_IN_WINDOW} as "inWindow",
        coalesce((select json_agg(json_build_object('menuItemId', i.id, 'name', i.name, 'emoji', i.emoji, 'price', i.price,
-           'qty', ci.qty, 'isAvailable', i.is_available, 'isVeg', i.is_veg) order by i.price desc, i.name)
+           'qty', ci.qty, 'isAvailable', i.is_available and i.is_active, 'isActive', i.is_active, 'isVeg', i.is_veg) order by i.price desc, i.name)
          from combo_items ci join menu_items i on i.id = ci.menu_item_id where ci.combo_id = x.id), '[]') as items
      from combos x where x.cafe_id = $1 ${activeOnly ? 'and x.is_active' : ''}
      order by x.sort, x.created_at`,
@@ -46,8 +47,10 @@ export async function cafeCombos(cafeId: string, activeOnly: boolean): Promise<C
   );
   return rows
     .filter((r) => !activeOnly || r.items.length > 0)
+    .filter((r) => !forCustomers || r.items.every((i) => (i as { isActive?: boolean }).isActive !== false))
     .map(({ inWindow, ...r }) => ({
       ...r,
+      items: r.items.map(({ isActive: _hidden, ...i }: typeof r.items[number] & { isActive?: boolean }) => i),
       mrp: r.items.reduce((s, i) => s + i.price * i.qty, 0),
       isVeg: r.items.every((i) => i.isVeg),
       availableNow: r.isActive && inWindow && r.items.length > 0 && r.items.every((i) => i.isAvailable),

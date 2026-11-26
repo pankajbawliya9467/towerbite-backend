@@ -76,7 +76,7 @@ async function teamView(t: TeamRow, userId: string) {
       [t.id, t.host_id],
     ),
     q<{ user_id: string; menu_item_id: string; qty: number; name: string; price: number; emoji: string; is_available: boolean }>(
-      `select ti.user_id, ti.menu_item_id, ti.qty, i.name, i.price, i.emoji, i.is_available
+      `select ti.user_id, ti.menu_item_id, ti.qty, i.name, i.price, i.emoji, (i.is_available and i.is_active) as is_available
        from team_items ti join menu_items i on i.id = ti.menu_item_id where ti.team_id = $1 order by ti.added_at`,
       [t.id],
     ),
@@ -235,7 +235,7 @@ export async function teamRoutes(app: FastifyInstance) {
     const ids = [...new Set(body.items.map((i) => i.menuItemId))];
     if (ids.length) {
       const menu = await q<{ id: string; name: string; is_available: boolean }>(
-        `select id, name, is_available from menu_items where cafe_id = $1 and id = any($2::uuid[])`,
+        `select id, name, is_available from menu_items where cafe_id = $1 and id = any($2::uuid[]) and is_active`,
         [t.cafe_id, ids],
       );
       if (menu.length !== ids.length) throw badRequest(`Some items are not on ${t.cafe_name}'s menu`);

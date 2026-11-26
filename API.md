@@ -4,24 +4,23 @@ Base URL (local): `http://localhost:4000`. All JSON, camelCase. Money is whole r
 Errors: `{ "error": "message shown to the user" }` with 400/401/403/404/409.
 
 ## Auth
-Send `Authorization: Bearer <Supabase access token>`.
+Send `Authorization: Bearer <session token>` (our own `tbs_…` token from a login below).
 
-| Who | How they log in (in the apps) |
+| Who | How they log in |
 |---|---|
-| Employee | Supabase **phone OTP**: `supabase.auth.signInWithOtp({ phone: '+91…' })` → `verifyOtp({ phone, token, type: 'sms' })` (6 digits) |
-| Cafe staff / admin | Supabase **email + password**: `supabase.auth.signInWithPassword({ email, password })` |
+| Employee | **Phone OTP**: `POST /v1/auth/otp/send { phone }` → `POST /v1/auth/otp/verify { phone, code }` → `{ token, expiresAt }` |
+| Cafe login / admin | **Email + password**: `POST /v1/auth/staff/login { email, password }` → `{ token, expiresAt }` |
+| Anyone (CRM) | Change own password: `POST /v1/auth/password { current, next }`; this device stays in, other devices are logged out |
 
-**Dev mode** (no Supabase yet): when the app env `*_DEV_AUTH=true` and the API has `DEV_AUTH=true`, skip Supabase and use the token
+**Dev mode**: when the app env `*_DEV_AUTH=true` and the API has `DEV_AUTH=true`, use the token
 `dev:<phone or email>`, e.g. `dev:+919876541207`, `dev:cafe@towerbites.dev` (Krunchy Kafe staff), `dev:admin@towerbites.dev` (super admin).
 In dev mode the OTP screen accepts `123456`, and staff login accepts any password.
 
-## Live updates (Supabase Realtime broadcast)
+## Live updates (WebSocket `/v1/live`)
 The API pings, the app re-fetches from the API. Always also poll as a fallback (cafe board 10s, tracking 15s).
 - `cafe:<cafeId>` event `order` payload `{ orderId, status }` → cafe board refetches `/v1/cafe/orders`
 - `order:<orderId>` event `status` payload `{ status }` → tracking screen refetches `/v1/orders/:id`
-```ts
-supabase.channel(`cafe:${cafeId}`).on('broadcast', { event: 'order' }, refetch).subscribe()
-```
+Connect to `wss://<api>/v1/live`, send `{ type: 'auth', token }`, then `{ type: 'sub', topic: 'cafe:<id>' }`.
 
 ## Public (no login)
 - `GET /v1/locations` → `[{ id, slug, name, area, city, cafeCount }]`
@@ -81,9 +80,15 @@ CRUD: `GET/POST /v1/admin/<r>`, `GET/PATCH/DELETE /v1/admin/<r>/:id` for
 - `menu-items` `{ cafeId, categoryId, name, description, price, isVeg, emoji, imageUrl, isAvailable, isPopular, sort }` (filter `?cafeId=&categoryId=`)
 
 Other:
-- `GET /v1/admin/staff` → `[{ userId, role, cafeId, cafeName, name, email, createdAt }]`
-- `POST /v1/admin/staff` `{ name, email, password, role, cafeId }` creates a Supabase login · `DELETE /v1/admin/staff/:userId`
+Every admin route needs a section (`orders, cafes, menu, locations, users, notifications, requests, reports, admins`);
+super admins have all. Lists of locations/towers/cafes/categories/menu items are readable by any admin.
+- Cafe logins (section `cafes`): `GET /v1/admin/staff` → `[{ userId, cafeId, cafeName, name, email, passwordSetAt, activeLogins }]` ·
+  `POST /v1/admin/staff` `{ name, email, password, cafeId }` · `PATCH /v1/admin/staff/:userId` `{ name?, email? }` (new email logs them out) ·
+  `POST /v1/admin/staff/:userId/password` `{ password }` · `DELETE /v1/admin/staff/:userId`
+- Admins (section `admins`): `GET /v1/admin/admins` · `POST /v1/admin/admins` `{ name, email, password, isSuper?, permissions[] }` ·
+  `PATCH /v1/admin/admins/:id` `{ name?, email?, isSuper?, permissions?, isActive? }` · `POST /v1/admin/admins/:id/password` `{ password }`.
+  Only a super admin can make or change a super admin; nobody can give access they don't have, or change their own access.
 - `GET /v1/admin/orders?locationId=&cafeId=&status=&limit=` → `Order[]`
 - `GET /v1/admin/users` → `[{ id, name, phone, email, company, tower, floor, desk, locationName, orderCount, spent, createdAt }]`
 - `GET /v1/admin/stats` → `{ ordersToday, salesToday, activeOrders, users, cafes, locations, byCafe: [{ id, name, emoji, locationName, orders, sales }] }`
-- `POST /v1/admin/upload` multipart `file` (+ optional field `folder`, e.g. `cafes` or `menu`) → `{ url, path }` (Supabase Storage, public bucket)
+- `POST /v1/admin/upload` multipart `file` (+ optional field `folder`, e.g. `cafes` or `menu`) → `{ url, path }` (public image bucket)

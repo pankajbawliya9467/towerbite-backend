@@ -1,15 +1,49 @@
 import type { FastifyRequest } from 'fastify';
-import { env } from './env.js';
+import { env, supabaseConfigured } from './env.js';
 import { one } from './db.js';
 import { supabase } from './supabase.js';
 import { devUserId } from './lib/devId.js';
-import { forbidden, unauthorized } from './lib/errors.js';
+import { forbidden, HttpError, unauthorized } from './lib/errors.js';
 import { InvalidToken, verifyLocally } from './lib/jwt.js';
 import { verifySession } from './lib/sessions.js';
 import { isTestNumber } from './lib/testLogin.js';
 
 export type AuthUser = { id: string; phone: string | null; email: string | null };
-export type Staff = { userId: string; role: 'cafe_staff' | 'super_admin'; cafeId: string | null; name: string };
+/**
+ * What an admin can be allowed to do: `<section>.<action>`. Every section has `view`; the others are only where
+ * that action exists. Super admins can do everything.
+ */
+export const CATALOG = {
+  orders: ['view', 'phone', 'csv'],
+  cafes: ['view', 'add', 'edit', 'delete', 'board', 'logins', 'openclose', 'order'],
+  menu: ['view', 'add', 'edit', 'delete', 'price', 'soldout'],
+  locations: ['view', 'add', 'edit', 'delete', 'geo'],
+  users: ['view', 'phone'],
+  notifications: ['view', 'send'],
+  requests: ['view', 'edit'],
+  reports: ['view', 'money'],
+  admins: ['view', 'add', 'edit', 'delete'],
+} as const;
+export type Section = keyof typeof CATALOG;
+export type Permission = { [S in Section]: `${S}.${(typeof CATALOG)[S][number]}` }[Section];
+export const PERMISSIONS = (Object.keys(CATALOG) as Section[]).flatMap((s) => CATALOG[s].map((a) => `${s}.${a}`)) as Permission[];
+
+/** Adds `view` to every section that has another action ticked, removes duplicates and unknown keys. */
+export function normalizePerms(list: string[]): Permission[] {
+  const set = new Set(list.filter((p) => (PERMISSIONS as string[]).includes(p)));
+  for (const p of [...set]) set.add(`${p.split('.')[0]}.view`);
+  return PERMISSIONS.filter((p) => set.has(p));
+}
+
+/**
+ * A CRM login: a cafe's staff (role cafe_staff, from `staff`) or an admin (role super_admin kept for
+ * the apps; from `admins`, with isSuper / permissions).
+ */
+export type Staff = {
+  userId: string; role: 'cafe_staff' | 'super_admin'; cafeId: string | null; name: string;
+  isSuper: boolean; permissions: Permission[];
+};
+export const can = (s: Staff, p: Permission) => s.role === 'super_admin' && (s.isSuper || s.permissions.includes(p));
 
 declare module 'fastify' {
   interface FastifyRequest {
@@ -47,8 +81,17 @@ export async function userFromBearer(token: string): Promise<AuthUser> {
     return { id: sess.id, phone: sess.phone, email: sess.email };
   }
 
-  return userFromToken(token);
+  // Old app versions still send Supabase tokens. LEGACY_SUPABASE_TOKENS=false turns this off once they are gone.
+  if (!legacyTokensOn()) throw unauthorized('Session expired, please log in again');
+  const user = await userFromToken(token).catch((e) => {
+    throw e instanceof HttpError ? e : unauthorized('Session expired, please log in again');
+  });
+  // Only phone logins (old app customers). A self-made Supabase email account must never get in.
+  if (!user.phone) throw unauthorized('Session expired, please log in again');
+  return user;
 }
+
+const legacyTokensOn = () => process.env.LEGACY_SUPABASE_TOKENS !== 'false' && (supabaseConfigured() || !!process.env.SUPABASE_JWT_SECRET);
 
 /** Tokens Supabase confirmed for us, kept briefly so the same token isn't checked over the network again. */
 const remoteCache = new Map<string, { user: AuthUser; until: number }>();
@@ -68,6 +111,7 @@ async function userFromToken(token: string): Promise<AuthUser> {
   // Fallback: ask Supabase (legacy HS256 tokens without SUPABASE_JWT_SECRET, or keys not reachable).
   const hit = remoteCache.get(token);
   if (hit && hit.until > Date.now()) return hit.user;
+  if (!supabaseConfigured()) throw unauthorized('Session expired, please log in again');
   const { data, error } = await supabase().auth.getUser(token);
   if (error || !data.user) throw unauthorized('Session expired, please log in again');
   const user = { id: data.user.id, phone: normPhone(data.user.phone), email: data.user.email ?? null };
@@ -78,27 +122,43 @@ async function userFromToken(token: string): Promise<AuthUser> {
 
 export async function getStaff(userId: string): Promise<Staff | undefined> {
   return one<Staff>(
-    `select user_id as "userId", role, cafe_id as "cafeId", name from staff where user_id = $1`,
+    `select * from (
+       select 0 as src, a.id as "userId", 'super_admin' as role, null::uuid as "cafeId", a.name,
+         a.is_super as "isSuper", a.permissions
+       from admins a where a.id = $1 and a.is_active
+       union all
+       select 1, s.user_id, s.role, s.cafe_id, s.name, false, '{}'::text[] from staff s where s.user_id = $1 and s.role = 'cafe_staff'
+     ) x order by src limit 1`,
     [userId],
-  );
+  ).then((r) => (r ? { userId: r.userId, role: r.role, cafeId: r.cafeId, name: r.name, isSuper: r.isSuper, permissions: r.permissions } : undefined));
 }
 
-export async function requireAdmin(req: FastifyRequest): Promise<Staff> {
+/** An admin allowed to manage `perm` (any admin when no section is given). */
+export async function requireAdmin(req: FastifyRequest, ...anyOf: Permission[]): Promise<Staff> {
   const user = await requireUser(req);
   const staff = await getStaff(user.id);
   if (staff?.role !== 'super_admin') throw forbidden('Admin access only');
+  if (anyOf.length && !anyOf.some((p) => can(staff, p))) throw noAccess(anyOf[0]);
   return staff;
 }
+
+export const noAccess = (p: Permission) => forbidden(`You don't have access to this (${p}). Ask a super admin.`);
 
 /**
  * Cafe staff act on their own cafe. A super admin can act on any cafe by passing
  * `x-cafe-id` header (used by the admin panel's "open cafe screen").
  */
-export async function requireCafe(req: FastifyRequest): Promise<{ staff: Staff; cafeId: string }> {
+/**
+ * `adminNeeds`: when an admin works inside a cafe panel, these ticks are needed too (any one of them), so the
+ * "Live board" tick can't be used to change the menu without the menu ticks. Cafe logins don't need them.
+ */
+export async function requireCafe(req: FastifyRequest, ...adminNeeds: Permission[]): Promise<{ staff: Staff; cafeId: string }> {
   const user = await requireUser(req);
   const staff = await getStaff(user.id);
   if (!staff) throw forbidden('Cafe staff only');
   if (staff.role === 'super_admin') {
+    if (!can(staff, 'cafes.board')) throw noAccess('cafes.board');
+    if (adminNeeds.length && !adminNeeds.some((p) => can(staff, p))) throw noAccess(adminNeeds[0]);
     const cafeId = req.headers['x-cafe-id'];
     if (typeof cafeId !== 'string' || !/^[0-9a-f-]{36}$/i.test(cafeId)) throw forbidden('Pick a cafe first');
     return { staff, cafeId };

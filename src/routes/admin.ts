@@ -4,14 +4,17 @@ import { z, type ZodRawShape } from 'zod';
 import { hashPassword } from '../lib/passwords.js';
 import { endUserSessions } from '../lib/sessions.js';
 import { one, q } from '../db.js';
-import { env, supabaseConfigured } from '../env.js';
-import { requireAdmin } from '../auth.js';
-import { supabase } from '../supabase.js';
+import { env } from '../env.js';
+import { can, noAccess, requireAdmin, type Permission, type Staff } from '../auth.js';
 import { devUserId } from '../lib/devId.js';
 import { badRequest, notFound } from '../lib/errors.js';
+import { assertEmailFree } from '../lib/logins.js';
 import { selectOrders } from '../lib/sql.js';
+import { day, like, paging, uuidOrNull, Where } from '../lib/paging.js';
+import { orderWhere, type OrdersQuery } from '../lib/orderFilters.js';
 import { cafesChanged } from '../realtime.js';
 import { saveImage } from '../lib/upload.js';
+import { csv, sendCsv } from './reports.js';
 
 const slug = z.string().trim().min(2).max(60).regex(/^[a-z0-9-]+$/, 'Use lowercase letters, numbers and dashes');
 const uuid = z.string().uuid();
@@ -57,8 +60,8 @@ const RESOURCES: Record<string, Resource> = {
     shape: {
       locationId: uuid, slug, name: z.string().trim().min(2).max(80), cuisines: z.string().trim().max(120),
       place: z.string().trim().max(80), emoji: z.string().trim().max(8), coverColor: z.string().regex(/^#[0-9a-fA-F]{6}$/),
-      imageUrl: url, logoUrl: url, phone: z.string().trim().max(20).nullable(), rating: z.number().min(0).max(5),
-      ratingCount: z.number().int().min(0), etaMin: z.number().int().min(1).max(120), etaMax: z.number().int().min(1).max(180),
+      // rating / ratingCount are read-only here: they come only from customers' ratings.
+      imageUrl: url, logoUrl: url, phone: z.string().trim().max(20).nullable(), etaMin: z.number().int().min(1).max(120), etaMax: z.number().int().min(1).max(180),
       isOpen: z.boolean(), acceptingOrders: z.boolean(), tags: z.array(z.string().trim().toLowerCase().max(20)).max(10),
       sort: z.number().int(), isActive: z.boolean(),
       lat: z.number().min(-90).max(90).nullable(), lng: z.number().min(-180).max(180).nullable(),
@@ -82,11 +85,12 @@ const RESOURCES: Record<string, Resource> = {
     cols: {
       cafeId: 'cafe_id', categoryId: 'category_id', name: 'name', description: 'description', price: 'price', isVeg: 'is_veg',
       emoji: 'emoji', imageUrl: 'image_url', isAvailable: 'is_available', isPopular: 'is_popular', sort: 'sort',
+      isActive: 'is_active',
     },
     shape: {
       cafeId: uuid, categoryId: uuid.nullable(), name: z.string().trim().min(1).max(80), description: z.string().trim().max(160),
       price: z.number().int().min(0).max(100000), isVeg: z.boolean(), emoji: z.string().trim().max(8), imageUrl: url,
-      isAvailable: z.boolean(), isPopular: z.boolean(), sort: z.number().int(),
+      isAvailable: z.boolean(), isPopular: z.boolean(), sort: z.number().int(), isActive: z.boolean(),
     },
     required: ['cafeId', 'name', 'price'],
     filters: ['cafeId', 'categoryId'],
@@ -137,11 +141,30 @@ function selectList(r: Resource) {
   return `id, ${fields.join(', ')}`;
 }
 
+/** Which admin section manages each resource. */
+const SECTION: Record<string, 'locations' | 'cafes' | 'menu'> = {
+  locations: 'locations', towers: 'locations', cafes: 'cafes', categories: 'menu', 'menu-items': 'menu',
+};
+/** Fields that need their own tick to be changed (all other fields need `<section>.edit`). */
+const FIELD_PERM: Record<string, Record<string, Permission>> = {
+  cafes: {
+    isActive: 'cafes.delete', isOpen: 'cafes.openclose', acceptingOrders: 'cafes.openclose',
+    lat: 'locations.geo', lng: 'locations.geo', geoRadiusM: 'locations.geo', geoCheck: 'locations.geo',
+  },
+  'menu-items': { price: 'menu.price', isAvailable: 'menu.soldout', isActive: 'menu.delete' },
+  locations: { isActive: 'locations.delete' },
+};
+/** Same value? (forms send every field; only real changes are checked). Numbers from numeric columns come as text. */
+const norm = (v: unknown) =>
+  v == null ? null : typeof v === 'object' ? JSON.stringify(v) : /^-?\d+(\.\d+)?$/.test(String(v)) ? Number(v) : String(v);
+
 export async function adminRoutes(app: FastifyInstance) {
   for (const [name, r] of Object.entries(RESOURCES)) {
+    const sec = SECTION[name];
     const full = z.object(r.shape);
     const partial = full.partial();
 
+    // Lists are readable by any admin (other sections need them for filters and pickers); changes need the section.
     app.get<{ Querystring: Record<string, string> }>(`/v1/admin/${name}`, async (req) => {
       await requireAdmin(req);
       const params: unknown[] = [];
@@ -167,8 +190,9 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     app.post(`/v1/admin/${name}`, async (req, reply) => {
-      await requireAdmin(req);
+      const me = await requireAdmin(req, `${sec}.add` as Permission);
       const body = partial.parse(req.body) as Record<string, unknown>;
+      if (name === 'cafes' && (body.geoCheck === true || body.lat != null) && !can(me, 'locations.geo')) throw noAccess('locations.geo');
       for (const k of r.required) if (body[k] === undefined) throw badRequest(`${k} is required`);
       await r.check?.(body);
       const keys = Object.keys(body).filter((k) => body[k] !== undefined);
@@ -183,9 +207,18 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     app.patch<{ Params: { id: string } }>(`/v1/admin/${name}/:id`, async (req) => {
-      await requireAdmin(req);
+      const me = await requireAdmin(req);
       const body = partial.parse(req.body) as Record<string, unknown>;
       const keys = Object.keys(body).filter((k) => body[k] !== undefined);
+      if (!me.isSuper && keys.length) {
+        const cur = await one<Record<string, unknown>>(`select ${selectList(r)} from ${r.table} where id = $1`, [req.params.id]);
+        if (!cur) throw notFound();
+        for (const k of keys) {
+          if (norm(cur[k]) === norm(body[k])) continue;
+          const need = FIELD_PERM[name]?.[k] ?? (`${sec}.edit` as Permission);
+          if (!can(me, need)) throw noAccess(need);
+        }
+      }
       if (keys.length) {
         await r.check?.(body, req.params.id);
         const before = await locationOf(name, req.params.id);
@@ -200,7 +233,7 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     app.delete<{ Params: { id: string } }>(`/v1/admin/${name}/:id`, async (req) => {
-      await requireAdmin(req);
+      await requireAdmin(req, `${sec}.delete` as Permission);
       // A cafe is never deleted (its orders, ratings and reports point to it): it is made inactive instead.
       if (name === 'cafes') throw badRequest('Cafes cannot be deleted. Make the cafe inactive instead.');
       const before = await locationOf(name, req.params.id);
@@ -216,7 +249,7 @@ export async function adminRoutes(app: FastifyInstance) {
    * show before closed ones; within each group this order is used.
    */
   app.put<{ Params: { id: string } }>('/v1/admin/locations/:id/cafe-order', async (req) => {
-    await requireAdmin(req);
+    await requireAdmin(req, 'cafes.order');
     const loc = uuid.parse(req.params.id);
     const { cafeIds } = z.object({ cafeIds: z.array(uuid).min(1).max(500) }).parse(req.body);
     if (new Set(cafeIds).size !== cafeIds.length) throw badRequest('A cafe is listed twice');
@@ -232,116 +265,151 @@ export async function adminRoutes(app: FastifyInstance) {
     return { ok: true };
   });
 
-  // ---- Staff (cafe logins and admins) ----
+  // ---- Cafe logins (staff). Admins live in their own table: routes/admins.ts ----
   app.get('/v1/admin/staff', async (req) => {
-    await requireAdmin(req);
+    await requireAdmin(req, 'cafes.logins');
     return q(
       `select s.user_id as "userId", s.role, s.cafe_id as "cafeId", s.name, s.email, s.created_at as "createdAt",
-         c.name as "cafeName"
-       from staff s left join cafes c on c.id = s.cafe_id order by s.role desc, c.name, s.name`,
+         s.password_set_at as "passwordSetAt", c.name as "cafeName",
+         (select count(*)::int from sessions x where x.user_id = s.user_id and x.expires_at > now()) as "activeLogins"
+       from staff s left join cafes c on c.id = s.cafe_id where s.role = 'cafe_staff' order by c.name, s.name`,
     );
   });
 
   app.post('/v1/admin/staff', async (req, reply) => {
-    await requireAdmin(req);
+    await requireAdmin(req, 'cafes.logins');
     const body = z
       .object({
         name: z.string().trim().min(1).max(80),
-        email: z.string().trim().toLowerCase().email(),
+        email: z.string().trim().toLowerCase().email().max(200),
         password: z.string().min(8).max(72),
-        role: z.enum(['cafe_staff', 'super_admin']).default('cafe_staff'),
-        cafeId: uuid.nullable().optional(),
+        cafeId: uuid,
       })
       .parse(req.body);
-    if (body.role === 'cafe_staff' && !body.cafeId) throw badRequest('Pick the cafe for this login');
-
-    let userId: string;
-    if (supabaseConfigured()) {
-      const { data, error } = await supabase().auth.admin.createUser({
-        email: body.email,
-        password: body.password,
-        email_confirm: true,
-        user_metadata: { name: body.name },
-      });
-      if (error || !data.user?.id) throw badRequest(error?.message ?? 'Could not create login');
-      userId = data.user.id;
-    } else if (env.devAuth) {
-      userId = devUserId(body.email);
-    } else {
-      userId = randomUUID(); // no Supabase (own database): the login lives only in our staff table
-    }
-
+    await assertEmailFree(body.email);
+    if (!(await one(`select 1 from cafes where id = $1`, [body.cafeId]))) throw badRequest('Cafe not found');
+    const userId = env.devAuth ? devUserId(body.email) : randomUUID();
     await q(
-      `insert into staff (user_id, role, cafe_id, name, email, password_hash, password_set_at) values ($1, $2, $3, $4, $5, $6, now())
-       on conflict (user_id) do update set role = excluded.role, cafe_id = excluded.cafe_id, name = excluded.name,
-         password_hash = excluded.password_hash, password_set_at = now()`,
-      [userId, body.role, body.role === 'cafe_staff' ? body.cafeId : null, body.name, body.email, await hashPassword(body.password)],
+      `insert into staff (user_id, role, cafe_id, name, email, password_hash, password_set_at) values ($1, 'cafe_staff', $2, $3, $4, $5, now())`,
+      [userId, body.cafeId, body.name, body.email, await hashPassword(body.password)],
     );
     reply.code(201);
-    return { userId, ...body, password: undefined };
+    return { userId, role: 'cafe_staff', cafeId: body.cafeId, name: body.name, email: body.email };
+  });
+
+  /** Change a cafe login's name / email. Changing the email logs them out everywhere. */
+  app.patch<{ Params: { userId: string } }>('/v1/admin/staff/:userId', async (req) => {
+    await requireAdmin(req, 'cafes.logins');
+    const id = uuid.parse(req.params.userId);
+    const body = z
+      .object({ name: z.string().trim().min(1).max(80).optional(), email: z.string().trim().toLowerCase().email().max(200).optional() })
+      .parse(req.body);
+    const cur = await one<{ email: string | null }>(`select email from staff where user_id = $1 and role = 'cafe_staff'`, [id]);
+    if (!cur) throw notFound();
+    const emailChanged = !!body.email && body.email !== (cur.email ?? '').toLowerCase();
+    if (emailChanged) await assertEmailFree(body.email!, id);
+    await q(`update staff set name = coalesce($2, name), email = coalesce($3, email) where user_id = $1`, [id, body.name ?? null, body.email ?? null]);
+    if (emailChanged) await endUserSessions(id);
+    return { ok: true, loggedOut: emailChanged };
   });
 
   app.delete<{ Params: { userId: string } }>('/v1/admin/staff/:userId', async (req) => {
-    const me = await requireAdmin(req);
-    if (me.userId === req.params.userId) throw badRequest('You cannot remove your own admin access');
-    const row = await one(`delete from staff where user_id = $1 returning user_id`, [req.params.userId]);
+    await requireAdmin(req, 'cafes.logins');
+    const row = await one(`delete from staff where user_id = $1 and role = 'cafe_staff' returning user_id`, [uuid.parse(req.params.userId)]);
     if (!row) throw notFound();
     await endUserSessions(req.params.userId);
-    if (supabaseConfigured()) await supabase().auth.admin.deleteUser(req.params.userId).catch(() => undefined);
     return { ok: true };
   });
 
-  /** New password for a staff login (forgotten password). Logs them out everywhere. */
+  /** New password for a cafe login (forgotten password). Logs them out everywhere. */
   app.post<{ Params: { userId: string } }>('/v1/admin/staff/:userId/password', async (req) => {
-    await requireAdmin(req);
+    await requireAdmin(req, 'cafes.logins');
     const { password } = z.object({ password: z.string().min(8).max(72) }).parse(req.body);
-    const row = await one(`update staff set password_hash = $2, password_set_at = now() where user_id = $1 returning user_id`, [
-      req.params.userId,
-      await hashPassword(password),
-    ]);
+    const row = await one(
+      `update staff set password_hash = $2, password_set_at = now() where user_id = $1 and role = 'cafe_staff' returning user_id`,
+      [uuid.parse(req.params.userId), await hashPassword(password)],
+    );
     if (!row) throw notFound();
     await endUserSessions(req.params.userId);
     return { ok: true };
   });
 
   // ---- Orders, users, stats ----
-  app.get<{ Querystring: { locationId?: string; cafeId?: string; status?: string; limit?: string } }>(
-    '/v1/admin/orders',
-    async (req) => {
-      await requireAdmin(req);
-      const params: unknown[] = [];
-      const where = ['true'];
-      if (req.query.locationId) {
-        params.push(uuid.parse(req.query.locationId));
-        where.push(`o.location_id = $${params.length}`);
-      }
-      if (req.query.cafeId) {
-        params.push(uuid.parse(req.query.cafeId));
-        where.push(`o.cafe_id = $${params.length}`);
-      }
-      if (req.query.status) {
-        params.push(req.query.status);
-        where.push(`o.status = $${params.length}`);
-      }
-      const limit = Math.min(Number(req.query.limit) || 100, 500);
-      return selectOrders(where.join(' and '), params, `order by o.created_at desc limit ${limit}`);
-    },
-  );
+  async function adminOrders(qs: OrdersQuery, me: Staff, max: number) {
+    const w = orderWhere(qs, can(me, 'orders.phone'));
+    const limit = Math.min(Number(qs.limit) || 100, max);
+    return selectOrders(w.sql, w.params, `order by o.created_at desc limit ${limit}`);
+  }
+  /** Without the "customer phone" tick the customer's and rider's numbers are hidden. */
+  const maskOrder = (me: Staff) => (o: Record<string, unknown>) =>
+    can(me, 'orders.phone') ? o : { ...o, customerPhone: null, riderPhone: null };
 
-  app.get('/v1/admin/users', async (req) => {
-    await requireAdmin(req);
-    return q(
+  /** Without `page` (the dashboard): the latest orders as a list. With `page`: one page plus the total. */
+  app.get<{ Querystring: OrdersQuery }>('/v1/admin/orders', async (req) => {
+    const me = await requireAdmin(req, 'orders.view');
+    if (req.query.page === undefined) return (await adminOrders(req.query, me, 500)).map(maskOrder(me));
+    const pg = paging(req.query);
+    const w = orderWhere(req.query, can(me, 'orders.phone'));
+    const [count] = await q<{ n: number }>(`select count(*)::int as n from orders o where ${w.sql}`, w.params);
+    const rows = await selectOrders(w.sql, w.params, `order by o.created_at desc limit ${pg.limit} offset ${pg.offset}`);
+    return { rows: rows.map(maskOrder(me)), total: count.n, page: pg.page, pageSize: pg.pageSize };
+  });
+
+  app.get<{ Querystring: OrdersQuery }>('/v1/admin/orders.csv', async (req, reply) => {
+    const me = await requireAdmin(req, 'orders.csv');
+    const rows = (await adminOrders({ ...req.query, limit: '10000' }, me, 10000)).map(maskOrder(me)) as any[];
+    const head = ['Order', 'Date', 'Cafe', 'Customer', 'Phone', 'Address', 'Items', 'Total (₹)', 'Status', 'Payment'];
+    return sendCsv(reply, `towerbites_orders_${new Date().toISOString().slice(0, 10)}.csv`, csv([
+      head,
+      ...rows.map((o) => [
+        o.orderNo, new Date(o.createdAt).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' }), o.cafe?.name, o.customerName,
+        o.customerPhone ?? '', [o.address?.tower, o.address?.floor, o.address?.desk].filter(Boolean).join(', '),
+        (o.items ?? []).map((i: any) => `${i.qty}× ${i.name}`).join('; '), o.total, o.status, o.paymentMethod ?? '',
+      ]),
+    ]));
+  });
+
+  type UsersQuery = { locationId?: string; company?: string; from?: string; to?: string; orders?: string; search?: string; page?: string; pageSize?: string };
+  /** Customers, newest first: building, company, joined between, with / without orders, search. Paged. */
+  app.get<{ Querystring: UsersQuery }>('/v1/admin/users', async (req) => {
+    const me = await requireAdmin(req, 'users.view');
+    const qs = req.query;
+    const phone = can(me, 'users.phone');
+    const w = new Where();
+    const loc = uuidOrNull(qs.locationId);
+    if (loc) w.add('p.location_id = ?', loc);
+    if (qs.company?.trim()) w.add('p.company ilike ?', like(qs.company));
+    const from = day(qs.from, 'start date');
+    const to = day(qs.to, 'end date');
+    if (from) w.add(`(p.created_at at time zone 'Asia/Kolkata')::date >= ?::date`, from);
+    if (to) w.add(`(p.created_at at time zone 'Asia/Kolkata')::date <= ?::date`, to);
+    if (qs.orders === 'yes') w.add('exists (select 1 from orders o where o.user_id = p.id)');
+    if (qs.orders === 'no') w.add('not exists (select 1 from orders o where o.user_id = p.id)');
+    if (qs.search?.trim()) {
+      if (phone) w.add('(p.name ilike ? or p.phone ilike ? or p.email ilike ?)', like(qs.search), like(qs.search), like(qs.search));
+      else w.add('p.name ilike ?', like(qs.search));
+    }
+    const pg = paging(qs);
+    const [count] = await q<{ n: number }>(`select count(*)::int as n from profiles p where ${w.sql}`, w.params);
+    const rows = await q(
       `select p.id, p.name, p.phone, p.email, p.company, p.tower, p.floor, p.desk, p.created_at as "createdAt",
          l.name as "locationName",
          (select count(*)::int from orders o where o.user_id = p.id) as "orderCount",
          (select coalesce(sum(total), 0)::int from orders o where o.user_id = p.id and o.status = 'delivered') as "spent"
        from profiles p left join locations l on l.id = p.location_id
-       order by p.created_at desc limit 500`,
+       where ${w.sql}
+       order by p.created_at desc limit ${w.p(pg.limit)} offset ${w.p(pg.offset)}`,
+      w.params,
     );
+    return {
+      rows: phone ? rows : rows.map((u) => ({ ...u, phone: null, email: null })),
+      total: count.n, page: pg.page, pageSize: pg.pageSize,
+    };
   });
 
   app.get('/v1/admin/stats', async (req) => {
-    await requireAdmin(req);
+    const me = await requireAdmin(req, 'reports.view');
+    const money = can(me, 'reports.money');
     const today = `(o.created_at at time zone 'Asia/Kolkata')::date = (now() at time zone 'Asia/Kolkata')::date`;
     const totals = await one(
       `select
@@ -360,12 +428,14 @@ export async function adminRoutes(app: FastifyInstance) {
        left join orders o on o.cafe_id = c.id and ${today}
        group by c.id, l.name order by orders desc, c.name limit 20`,
     );
+    // Without "sales & money" the rupee numbers are left out.
+    if (!money) return { ...totals, salesToday: null, byCafe: byCafe.map((c) => ({ ...c, sales: null })) };
     return { ...totals, byCafe };
   });
 
-  // ---- Image upload to Supabase Storage ----
+  // ---- Image upload (cafe logos, menu photos) ----
   app.post('/v1/admin/upload', async (req) => {
-    await requireAdmin(req);
+    await requireAdmin(req, 'cafes.add', 'cafes.edit', 'menu.add', 'menu.edit');
     return saveImage(req, (fields) =>
       z.string().regex(/^[a-z0-9-]{1,60}$/).catch('misc').parse((fields.folder as { value?: unknown } | undefined)?.value));
   });

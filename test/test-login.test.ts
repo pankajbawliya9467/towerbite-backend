@@ -118,7 +118,9 @@ test('CRM staff login through the API: old password copied once, wrong password 
   const { q } = await import('../src/db.js');
   const id = crypto.randomUUID();
   const email = `staff${n}@cafe.test`;
-  await q(`insert into staff (user_id, role, name, email) values ($1, 'super_admin', 'T', $2)`, [id, email]);
+  const cafeId = (await q<{ id: string }>(`select id from cafes limit 1`))[0].id;
+  await q(`insert into staff (user_id, role, cafe_id, name, email) values ($1, 'cafe_staff', $3, 'T', $2)`, [id, email, cafeId]);
+  const admin = 'dev:admin@towerbites.dev';
   let oldChecks = 0;
   setPasswordProvider({ async verify(e, p) { oldChecks++; return e === email && p === 'oldpass123' ? id : null; } });
 
@@ -131,12 +133,13 @@ test('CRM staff login through the API: old password copied once, wrong password 
   const checks = oldChecks;
   assert.equal((await call('POST', '/v1/auth/staff/login', { email, password: 'oldpass123' })).status, 200);
   assert.equal(oldChecks, checks, 'second login uses our own copy');
-  assert.equal((await call('GET', '/v1/admin/staff', undefined, ok.body.token)).status, 200, 'session works for admin routes');
+  assert.equal((await call('GET', '/v1/cafe/orders', undefined, ok.body.token)).status, 200, 'session works for cafe routes');
+  assert.equal((await call('GET', '/v1/admin/staff', undefined, ok.body.token)).status, 403, 'a cafe login is not an admin');
 
   // admin sets a new password: old one stops working, old sessions end
-  const r = await call('POST', `/v1/admin/staff/${id}/password`, { password: 'newpass456' }, ok.body.token);
+  const r = await call('POST', `/v1/admin/staff/${id}/password`, { password: 'newpass456' }, admin);
   assert.equal(r.status, 200, JSON.stringify(r.body));
-  assert.equal((await call('GET', '/v1/admin/staff', undefined, ok.body.token)).status, 401);
+  assert.equal((await call('GET', '/v1/cafe/orders', undefined, ok.body.token)).status, 401);
   assert.equal((await call('POST', '/v1/auth/staff/login', { email, password: 'oldpass123' })).status, 401);
   assert.equal((await call('POST', '/v1/auth/staff/login', { email, password: 'newpass456' })).status, 200);
   assert.equal((await call('POST', '/v1/auth/staff/login', { email: 'nobody@x.test', password: 'whatever1' })).status, 401);
