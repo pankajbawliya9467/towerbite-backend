@@ -1,0 +1,818 @@
+{
+ "format": "towerbites-catalog",
+ "version": 1,
+ "exportedAt": "2026-11-27T17:00:00.000Z",
+ "note": "Starting master list for TowerBites (from the 27 Nov 2026 local audit). Import it in Admin → Categories → Mapping → Import, then press Suggest.",
+ "categories": [
+  {
+   "slug": "beverages",
+   "name": "Beverages",
+   "parent": null,
+   "emoji": "☕",
+   "aliases": [
+    "beverages",
+    "hot drink",
+    "drinks"
+   ],
+   "keywords": [],
+   "sort": 1,
+   "isActive": true
+  },
+  {
+   "slug": "beverages-tea-and-chai",
+   "name": "Tea & chai",
+   "parent": "beverages",
+   "emoji": "",
+   "aliases": [
+    "tea",
+    "indian tea",
+    "chai",
+    "hot drink › tea",
+    "beverages › indian tea"
+   ],
+   "keywords": [
+    "tea",
+    "chai",
+    "kadak",
+    "adrak",
+    "elaichi",
+    "masala tea",
+    "green tea",
+    "chamomile",
+    "lemon tea"
+   ],
+   "sort": 1,
+   "isActive": true
+  },
+  {
+   "slug": "beverages-hot-coffee",
+   "name": "Hot coffee",
+   "parent": "beverages",
+   "emoji": "",
+   "aliases": [
+    "coffee",
+    "hot coffee",
+    "hot coffee & chocolate",
+    "beverages › hot coffee & chocolate"
+   ],
+   "keywords": [
+    "coffee",
+    "cappuccino",
+    "latte",
+    "espresso",
+    "mocha",
+    "americano",
+    "hot chocolate",
+    "filter coffee"
+   ],
+   "sort": 2,
+   "isActive": true
+  },
+  {
+   "slug": "beverages-cold-coffee-and-iced-tea",
+   "name": "Cold coffee & iced tea",
+   "parent": "beverages",
+   "emoji": "",
+   "aliases": [
+    "cold coffee & ice tea",
+    "cold coffee",
+    "iced tea",
+    "ice tea",
+    "beverages › cold coffee & ice tea",
+    "beverages › cold coffee",
+    "beverages › iced tea"
+   ],
+   "keywords": [
+    "cold coffee",
+    "cold mocha",
+    "cold brew",
+    "iced",
+    "ice latte",
+    "iceamericano",
+    "ice americano",
+    "frappe",
+    "ice tea",
+    "iced tea"
+   ],
+   "sort": 3,
+   "isActive": true
+  },
+  {
+   "slug": "beverages-shakes",
+   "name": "Shakes",
+   "parent": "beverages",
+   "emoji": "",
+   "aliases": [
+    "shakes",
+    "milkshakes",
+    "shake & refreshers",
+    "beverages › shakes",
+    "beverages › milkshakes"
+   ],
+   "keywords": [
+    "shake",
+    "milkshake",
+    "milk shake",
+    "smoothie"
+   ],
+   "sort": 4,
+   "isActive": true
+  },
+  {
+   "slug": "beverages-mojitos-and-mocktails",
+   "name": "Mojitos & mocktails",
+   "parent": "beverages",
+   "emoji": "",
+   "aliases": [
+    "mocktails & mojitos",
+    "mojitos",
+    "mocktails",
+    "beverages › mocktails & mojitos"
+   ],
+   "keywords": [
+    "mojito",
+    "mocktail",
+    "fizz",
+    "lemonade",
+    "virgin",
+    "blue lagoon",
+    "punch"
+   ],
+   "sort": 5,
+   "isActive": true
+  },
+  {
+   "slug": "beverages-lassi-and-chaas",
+   "name": "Lassi & chaas",
+   "parent": "beverages",
+   "emoji": "",
+   "aliases": [
+    "lassi",
+    "lassi & mojitos",
+    "beverages › lassi",
+    "beverages › lassi & mojitos"
+   ],
+   "keywords": [
+    "lassi",
+    "chaas",
+    "chhach",
+    "chach",
+    "chhachh",
+    "buttermilk"
+   ],
+   "sort": 6,
+   "isActive": true
+  },
+  {
+   "slug": "beverages-juices-and-cold-drinks",
+   "name": "Juices & cold drinks",
+   "parent": "beverages",
+   "emoji": "",
+   "aliases": [
+    "cold drinks",
+    "juices & coolers",
+    "juices",
+    "soft drinks",
+    "beverages › juices & coolers"
+   ],
+   "keywords": [
+    "juice",
+    "cold drink",
+    "soda",
+    "nimbu",
+    "shikanji",
+    "coke",
+    "pepsi",
+    "sprite",
+    "cooler",
+    "water"
+   ],
+   "sort": 7,
+   "isActive": true
+  },
+  {
+   "slug": "snacks",
+   "name": "Snacks",
+   "parent": null,
+   "emoji": "🥟",
+   "aliases": [
+    "snacks & bites",
+    "quick bites"
+   ],
+   "keywords": [],
+   "sort": 2,
+   "isActive": true
+  },
+  {
+   "slug": "snacks-indian-snacks-and-chaat",
+   "name": "Indian snacks & chaat",
+   "parent": "snacks",
+   "emoji": "",
+   "aliases": [
+    "snacks",
+    "delight bites",
+    "indian snacks",
+    "chaat corner",
+    "quick bites",
+    "bread pakora & vada pav",
+    "sweet corn",
+    "snacks & bites › delight bites",
+    "snacks & bites › bread pakora & vada pav",
+    "quick bites › chaat corner",
+    "quick bites › indian snacks",
+    "quick bites › sweet corn"
+   ],
+   "keywords": [
+    "samosa",
+    "kachori",
+    "pakora",
+    "chaat",
+    "bhel",
+    "sev puri",
+    "pani puri",
+    "vada pav",
+    "dhokla",
+    "bun maska",
+    "patties"
+   ],
+   "sort": 1,
+   "isActive": true
+  },
+  {
+   "slug": "snacks-fries-and-sides",
+   "name": "Fries & sides",
+   "parent": "snacks",
+   "emoji": "",
+   "aliases": [
+    "fries",
+    "crunchy sides",
+    "sides",
+    "quick bites › crunchy sides",
+    "snacks › fries"
+   ],
+   "keywords": [
+    "fries",
+    "wedges",
+    "nuggets",
+    "potato smileys"
+   ],
+   "sort": 2,
+   "isActive": true
+  },
+  {
+   "slug": "snacks-momos",
+   "name": "Momos",
+   "parent": "snacks",
+   "emoji": "",
+   "aliases": [
+    "momos",
+    "momos – steamed & fried",
+    "quick bites › momos – steamed & fried"
+   ],
+   "keywords": [
+    "momo",
+    "momos"
+   ],
+   "sort": 3,
+   "isActive": true
+  },
+  {
+   "slug": "fast-food",
+   "name": "Fast food",
+   "parent": null,
+   "emoji": "🍔",
+   "aliases": [
+    "cafe favourites",
+    "café favourites"
+   ],
+   "keywords": [],
+   "sort": 3,
+   "isActive": true
+  },
+  {
+   "slug": "fast-food-burgers",
+   "name": "Burgers",
+   "parent": "fast-food",
+   "emoji": "",
+   "aliases": [
+    "burger",
+    "burgers",
+    "grill burgers",
+    "burger & fries",
+    "snacks › burger",
+    "snacks & bites › burger",
+    "café favourites › grill burgers",
+    "snacks › burger & fries"
+   ],
+   "keywords": [
+    "burger"
+   ],
+   "sort": 1,
+   "isActive": true
+  },
+  {
+   "slug": "fast-food-sandwiches",
+   "name": "Sandwiches",
+   "parent": "fast-food",
+   "emoji": "",
+   "aliases": [
+    "sandwich",
+    "sandwiches",
+    "bread sandwiches",
+    "toasts",
+    "snacks › sandwich",
+    "snacks › sandwiches",
+    "snacks & bites › bread sandwiches",
+    "café favourites › sandwiches",
+    "breakfast & light meals › toasts"
+   ],
+   "keywords": [
+    "sandwich",
+    "toast",
+    "club"
+   ],
+   "sort": 2,
+   "isActive": true
+  },
+  {
+   "slug": "fast-food-subs",
+   "name": "Subs",
+   "parent": "fast-food",
+   "emoji": "",
+   "aliases": [
+    "sub sandwich",
+    "subs",
+    "snacks & bites › sub sandwich",
+    "café favourites › subs"
+   ],
+   "keywords": [
+    "sub"
+   ],
+   "sort": 3,
+   "isActive": true
+  },
+  {
+   "slug": "fast-food-wraps-and-rolls",
+   "name": "Wraps & rolls",
+   "parent": "fast-food",
+   "emoji": "",
+   "aliases": [
+    "wraps",
+    "wraps & rolls",
+    "rolls",
+    "wraps & oats",
+    "snacks › wraps",
+    "snacks › rolls",
+    "snacks › wraps & oats",
+    "quick meals › wraps & rolls",
+    "café favourites › wraps"
+   ],
+   "keywords": [
+    "wrap",
+    "roll",
+    "frankie",
+    "kathi"
+   ],
+   "sort": 4,
+   "isActive": true
+  },
+  {
+   "slug": "maggi-pasta-and-pizza",
+   "name": "Maggi, pasta & pizza",
+   "parent": null,
+   "emoji": "🍝",
+   "aliases": [
+    "quick meals",
+    "meal delights"
+   ],
+   "keywords": [],
+   "sort": 4,
+   "isActive": true
+  },
+  {
+   "slug": "maggi-pasta-and-pizza-maggi",
+   "name": "Maggi",
+   "parent": "maggi-pasta-and-pizza",
+   "emoji": "",
+   "aliases": [
+    "maggi",
+    "maggi & soups",
+    "snacks › maggi",
+    "quick meals › maggi",
+    "meal delights › maggi",
+    "snacks › maggi & soups"
+   ],
+   "keywords": [
+    "maggi"
+   ],
+   "sort": 1,
+   "isActive": true
+  },
+  {
+   "slug": "maggi-pasta-and-pizza-pasta",
+   "name": "Pasta",
+   "parent": "maggi-pasta-and-pizza",
+   "emoji": "",
+   "aliases": [
+    "pasta",
+    "pasta & pizza",
+    "quick meals › pasta",
+    "snacks › pasta",
+    "meal delights › pasta",
+    "snacks › pasta & pizza"
+   ],
+   "keywords": [
+    "pasta",
+    "macroni",
+    "macaroni",
+    "penne",
+    "spaghetti",
+    "alfredo"
+   ],
+   "sort": 2,
+   "isActive": true
+  },
+  {
+   "slug": "maggi-pasta-and-pizza-pizza",
+   "name": "Pizza",
+   "parent": "maggi-pasta-and-pizza",
+   "emoji": "",
+   "aliases": [
+    "pizza",
+    "quick meals › pizza"
+   ],
+   "keywords": [
+    "pizza",
+    "margrita",
+    "margherita"
+   ],
+   "sort": 3,
+   "isActive": true
+  },
+  {
+   "slug": "south-indian",
+   "name": "South Indian",
+   "parent": null,
+   "emoji": "🥞",
+   "aliases": [
+    "dosa",
+    "south indian"
+   ],
+   "keywords": [],
+   "sort": 5,
+   "isActive": true
+  },
+  {
+   "slug": "south-indian-plain-and-masala-dosa",
+   "name": "Plain & masala dosa",
+   "parent": "south-indian",
+   "emoji": "",
+   "aliases": [
+    "plain dosa",
+    "masala dosa",
+    "dosa › plain dosa",
+    "dosa › masala dosa"
+   ],
+   "keywords": [
+    "dosa"
+   ],
+   "sort": 1,
+   "isActive": true
+  },
+  {
+   "slug": "south-indian-rava-dosa",
+   "name": "Rava dosa",
+   "parent": "south-indian",
+   "emoji": "",
+   "aliases": [
+    "rava dosa",
+    "dosa › rava dosa"
+   ],
+   "keywords": [
+    "dosa"
+   ],
+   "sort": 2,
+   "isActive": true
+  },
+  {
+   "slug": "south-indian-specialty-dosa",
+   "name": "Specialty dosa",
+   "parent": "south-indian",
+   "emoji": "",
+   "aliases": [
+    "fusion dosa",
+    "southern dosa",
+    "shribhojanm spl dosa",
+    "special dosa",
+    "dosa › fusion dosa",
+    "dosa › southern dosa",
+    "dosa › shribhojanm spl dosa"
+   ],
+   "keywords": [
+    "dosa"
+   ],
+   "sort": 3,
+   "isActive": true
+  },
+  {
+   "slug": "south-indian-uttapam",
+   "name": "Uttapam",
+   "parent": "south-indian",
+   "emoji": "",
+   "aliases": [
+    "uttapams",
+    "uttapam"
+   ],
+   "keywords": [
+    "uttapam"
+   ],
+   "sort": 4,
+   "isActive": true
+  },
+  {
+   "slug": "south-indian-idli-and-vada",
+   "name": "Idli & vada",
+   "parent": "south-indian",
+   "emoji": "",
+   "aliases": [
+    "idli",
+    "idli & vada",
+    "vada"
+   ],
+   "keywords": [
+    "idli",
+    "medu vada",
+    "sambar vada"
+   ],
+   "sort": 5,
+   "isActive": true
+  },
+  {
+   "slug": "south-indian-south-indian-rice",
+   "name": "South Indian rice",
+   "parent": "south-indian",
+   "emoji": "",
+   "aliases": [
+    "south indian rice"
+   ],
+   "keywords": [
+    "curd rice",
+    "lemon rice",
+    "coconut rice",
+    "bisibele",
+    "tamarind rice"
+   ],
+   "sort": 6,
+   "isActive": true
+  },
+  {
+   "slug": "chinese",
+   "name": "Chinese",
+   "parent": null,
+   "emoji": "🥡",
+   "aliases": [
+    "chinese"
+   ],
+   "keywords": [],
+   "sort": 6,
+   "isActive": true
+  },
+  {
+   "slug": "chinese-chinese-starters",
+   "name": "Chinese starters",
+   "parent": "chinese",
+   "emoji": "",
+   "aliases": [
+    "chinese › starters",
+    "chinese & indo - chinese",
+    "chinese & indo-chinese",
+    "starters"
+   ],
+   "keywords": [
+    "chilli potato",
+    "honey chilli",
+    "manchurian",
+    "crispy",
+    "spring roll",
+    "chilli paneer dry"
+   ],
+   "sort": 1,
+   "isActive": true
+  },
+  {
+   "slug": "chinese-chinese-main-course",
+   "name": "Chinese main course",
+   "parent": "chinese",
+   "emoji": "",
+   "aliases": [
+    "chinese › main course"
+   ],
+   "keywords": [],
+   "sort": 2,
+   "isActive": true
+  },
+  {
+   "slug": "chinese-noodles-and-fried-rice",
+   "name": "Noodles & fried rice",
+   "parent": "chinese",
+   "emoji": "",
+   "aliases": [
+    "noodles & rice",
+    "chinese › noodles & rice",
+    "noodles"
+   ],
+   "keywords": [
+    "noodles",
+    "chowmein",
+    "chownmein",
+    "fried rice",
+    "hakka",
+    "schezwan rice"
+   ],
+   "sort": 3,
+   "isActive": true
+  },
+  {
+   "slug": "chinese-soups",
+   "name": "Soups",
+   "parent": "chinese",
+   "emoji": "",
+   "aliases": [
+    "soups",
+    "meal delights › soups",
+    "soup"
+   ],
+   "keywords": [
+    "soup",
+    "hot and sour",
+    "hot & sour",
+    "manchow"
+   ],
+   "sort": 4,
+   "isActive": true
+  },
+  {
+   "slug": "north-indian-meals",
+   "name": "North Indian meals",
+   "parent": null,
+   "emoji": "🍛",
+   "aliases": [
+    "main course",
+    "meal delights"
+   ],
+   "keywords": [],
+   "sort": 7,
+   "isActive": true
+  },
+  {
+   "slug": "north-indian-meals-curries-and-raita",
+   "name": "Curries & raita",
+   "parent": "north-indian-meals",
+   "emoji": "",
+   "aliases": [
+    "main course",
+    "curries"
+   ],
+   "keywords": [
+    "raita",
+    "paneer butter masala",
+    "dal makhani",
+    "kadhai paneer",
+    "shahi paneer"
+   ],
+   "sort": 1,
+   "isActive": true
+  },
+  {
+   "slug": "north-indian-meals-parathas-and-kulchas",
+   "name": "Parathas & kulchas",
+   "parent": "north-indian-meals",
+   "emoji": "",
+   "aliases": [
+    "parathas & kulchas",
+    "kulcha",
+    "stuffed kulchas",
+    "main course › parathas & kulchas",
+    "snacks › kulcha",
+    "meal delights › stuffed kulchas"
+   ],
+   "keywords": [
+    "paratha",
+    "kulcha"
+   ],
+   "sort": 2,
+   "isActive": true
+  },
+  {
+   "slug": "north-indian-meals-thali-and-rice-bowls",
+   "name": "Thali & rice bowls",
+   "parent": "north-indian-meals",
+   "emoji": "",
+   "aliases": [
+    "thali & rice bowl",
+    "rice bowls",
+    "thali",
+    "main course › thali & rice bowl",
+    "meal delights › rice bowls"
+   ],
+   "keywords": [
+    "thali",
+    "rice bowl",
+    "rajma rice",
+    "chole rice",
+    "kadi rice",
+    "dal rice"
+   ],
+   "sort": 3,
+   "isActive": true
+  },
+  {
+   "slug": "north-indian-meals-breakfast-and-eggs",
+   "name": "Breakfast & eggs",
+   "parent": "north-indian-meals",
+   "emoji": "",
+   "aliases": [
+    "omelette",
+    "omelettes",
+    "indian breakfast",
+    "breakfast & light meals",
+    "snacks › omelette",
+    "breakfast & light meals › omelettes",
+    "breakfast & light meals › indian breakfast"
+   ],
+   "keywords": [
+    "omelette",
+    "bhurji",
+    "poha",
+    "upma",
+    "chole bhature",
+    "poori bhaji",
+    "aloo puri"
+   ],
+   "sort": 4,
+   "isActive": true
+  },
+  {
+   "slug": "north-indian-meals-value-meals",
+   "name": "Value meals",
+   "parent": "north-indian-meals",
+   "emoji": "",
+   "aliases": [
+    "combo",
+    "combos & value meals",
+    "meal combos",
+    "combos & desserts › meal combos"
+   ],
+   "keywords": [],
+   "sort": 5,
+   "isActive": true
+  },
+  {
+   "slug": "healthy",
+   "name": "Healthy",
+   "parent": null,
+   "emoji": "🥗",
+   "aliases": [
+    "healthy & fit",
+    "healthy",
+    "salads"
+   ],
+   "keywords": [
+    "oats",
+    "chilla",
+    "sprouts",
+    "salad",
+    "quinoa"
+   ],
+   "sort": 8,
+   "isActive": true
+  },
+  {
+   "slug": "desserts",
+   "name": "Desserts",
+   "parent": null,
+   "emoji": "🍨",
+   "aliases": [
+    "deserts",
+    "desserts",
+    "combos & desserts › desserts",
+    "sweets"
+   ],
+   "keywords": [
+    "brownie",
+    "muffin",
+    "gulab jamun",
+    "ice cream",
+    "cake",
+    "pastry",
+    "cookie",
+    "rasmalai",
+    "halwa"
+   ],
+   "sort": 9,
+   "isActive": true
+  }
+ ],
+ "mapping": [],
+ "assignments": []
+}

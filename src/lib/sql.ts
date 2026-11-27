@@ -8,7 +8,8 @@ export const CAFE_COLS = `c.id, c.location_id as "locationId", c.slug, c.name, c
 
 export const ITEM_COLS = `i.id, i.cafe_id as "cafeId", i.category_id as "categoryId", i.name, i.description, i.price,
   i.is_veg as "isVeg", i.emoji, i.image_url as "imageUrl", i.is_available as "isAvailable",
-  i.is_popular as "isPopular", i.is_active as "isActive", i.sort`;
+  i.is_popular as "isPopular", i.is_active as "isActive", i.sort,
+  i.catalog_category_id as "catalogCategoryId"`;
 
 export const PROFILE_COLS = `p.id, p.name, p.phone, p.email, p.location_id as "locationId", p.company, p.tower, p.floor, p.desk`;
 

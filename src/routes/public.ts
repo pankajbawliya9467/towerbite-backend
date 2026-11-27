@@ -3,14 +3,37 @@ import { q, one } from '../db.js';
 import { CAFE_COLS, ITEM_COLS } from '../lib/sql.js';
 import { notFound } from '../lib/errors.js';
 import { cafeCombos } from '../lib/combos.js';
+import { catalogOn, OTHER_CATEGORY } from '../lib/catalog.js';
+
+/**
+ * The categories a menu shows. Switch off: the cafe's own categories. Switch on (global categories): only the
+ * global categories this cafe has products in, plus their main categories.
+ */
+function menuCategories(cafeId: string, global: boolean, forCustomers: boolean) {
+  if (!global) {
+    return q(`select id, name, sort, parent_id as "parentId" from categories where cafe_id = $1 order by sort, name`, [cafeId]);
+  }
+  return q(
+    `with used as (
+       select distinct catalog_category_id as id from menu_items
+       where cafe_id = $1 and catalog_category_id is not null ${forCustomers ? 'and is_active' : ''}
+     )
+     select k.id, k.name, k.sort, k.parent_id as "parentId" from catalog_categories k
+     where k.id in (select id from used)
+        or k.id in (select x.parent_id from catalog_categories x where x.id in (select id from used))
+     order by k.sort, k.name`,
+    [cafeId],
+  );
+}
 
 /** `forCustomers`: leave out products the cafe has hidden (the cafe panel and admin see everything). */
 export async function cafeWithMenu(cafeId: string, forCustomers = false) {
-  // Three independent reads in parallel (one round trip to the database instead of three).
+  const global = await catalogOn();
+  // Independent reads in parallel (one round trip to the database instead of several).
   const [cafe, categories, items, combos, likes] = await Promise.all([
     one(`select ${CAFE_COLS} from cafes c where c.id = $1`, [cafeId]),
-    q(`select id, name, sort, parent_id as "parentId" from categories where cafe_id = $1 order by sort, name`, [cafeId]),
-    q(
+    menuCategories(cafeId, global, forCustomers),
+    q<{ id: string; categoryId: string | null; catalogCategoryId: string | null }>(
       `select ${ITEM_COLS} from menu_items i where i.cafe_id = $1 ${forCustomers ? 'and i.is_active' : ''}
        order by i.sort, i.name`,
       [cafeId],
@@ -25,11 +48,15 @@ export async function cafeWithMenu(cafeId: string, forCustomers = false) {
     ),
   ]);
   if (!cafe) throw notFound('Cafe not found');
-  const withLikes = (items as { id: string }[]).map((i) => {
+  const withLikes = items.map((i) => {
+    // Global categories: the apps keep reading `categoryId`, so it carries the global one. A product without
+    // one yet goes under "More" instead of disappearing from the menu.
+    const item = global ? { ...i, categoryId: i.catalogCategoryId ?? OTHER_CATEGORY.id } : i;
     const l = likes.find((x) => x.id === i.id);
-    return l && l.total >= 3 ? { ...i, likePct: Math.round((l.liked / l.total) * 100), likeCount: l.total } : i;
+    return l && l.total >= 3 ? { ...item, likePct: Math.round((l.liked / l.total) * 100), likeCount: l.total } : item;
   });
-  return { ...cafe, categories, items: withLikes, combos };
+  const cats = global && withLikes.some((i) => i.categoryId === OTHER_CATEGORY.id) ? [...categories, OTHER_CATEGORY] : categories;
+  return { ...cafe, categories: cats, items: withLikes, combos };
 }
 
 export async function publicRoutes(app: FastifyInstance) {

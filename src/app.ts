@@ -23,6 +23,7 @@ import { accountRoutes } from './routes/account.js';
 import { authOtpRoutes } from './routes/authOtp.js';
 import { authStaffRoutes } from './routes/authStaff.js';
 import { liveRoutes } from './routes/live.js';
+import { catalogRoutes } from './routes/catalog.js';
 
 export async function buildApp() {
   const app = Fastify({
@@ -96,5 +97,6 @@ export async function buildApp() {
   await app.register(notifyRoutes);
   await app.register(aiSettingsRoutes);
   await app.register(adminReportRoutes);
+  await app.register(catalogRoutes);
   return app;
 }

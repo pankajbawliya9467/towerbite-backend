@@ -92,3 +92,23 @@ super admins have all. Lists of locations/towers/cafes/categories/menu items are
 - `GET /v1/admin/users` → `[{ id, name, phone, email, company, tower, floor, desk, locationName, orderCount, spent, createdAt }]`
 - `GET /v1/admin/stats` → `{ ordersToday, salesToday, activeOrders, users, cafes, locations, byCafe: [{ id, name, emoji, locationName, orders, sales }] }`
 - `POST /v1/admin/upload` multipart `file` (+ optional field `folder`, e.g. `cafes` or `menu`) → `{ url, path }` (public image bucket)
+
+## Global categories (Admin → Categories)
+One list of categories for every cafe: main categories (`parentId: null`) and one level of sub-categories.
+Products point to it with `catalogCategoryId`. A product sits in a **leaf**: a sub-category, or a main category
+without sub-categories. Permissions: `catalog.view | add | edit | delete`; the switch is super admin only.
+
+- `GET /v1/admin/catalog` (any admin) → `{ enabled, categories: [{ id, parentId, name, slug, emoji, aliases, keywords, sort, isActive, products, cafes }], unassigned, totalProducts }`
+- `POST /v1/admin/catalog` `{ name, parentId?, emoji?, aliases?, keywords?, sort? }` · `PATCH /v1/admin/catalog/:id` (same fields + `isActive`) · `DELETE /v1/admin/catalog/:id` (only empty ones)
+- `PUT /v1/admin/catalog/order` `{ parentId | null, ids[] }` · `POST /v1/admin/catalog/merge` `{ fromId, toId }` (moves products, turns `fromId` off, keeps its name as an alias)
+- `PUT /v1/admin/catalog/switch` `{ on }` — menus everywhere use the global categories (on) or each cafe's own (off)
+- Moving the old per-cafe categories (grouped by name, `key` = `"parent › name"` or `"name"`):
+  `GET /v1/admin/catalog/mapping` · `POST /v1/admin/catalog/mapping/suggest` · `PUT /v1/admin/catalog/mapping` `{ key, action: map|popular|skip, catalogCategoryId, useKeywords, approved }` ·
+  `GET /v1/admin/catalog/mapping/preview?key=` · `POST /v1/admin/catalog/mapping/apply` `{ overwrite? }`
+- `GET /v1/admin/catalog/products?category=<id>|none&cafeId=&search=&page=` · `POST /v1/admin/catalog/assign` `{ itemIds[], catalogCategoryId }`
+- `GET /v1/admin/catalog/export` · `POST /v1/admin/catalog/import` (the export file; categories by slug, mapping by name, products by id). Starting list: `db/catalog/towerbites-catalog.json`.
+
+When the switch is on, `CafeWithMenu.categories` comes from the global list (only categories the cafe has
+products in, plus their main categories) and `MenuItem.categoryId` is the global category. The apps don't change.
+A product without a global category gets `categoryId = 00000000-0000-4000-8000-00000000c0de` ("More"), so it
+never disappears from a menu.

@@ -17,6 +17,7 @@ export const CATALOG = {
   orders: ['view', 'phone', 'csv'],
   cafes: ['view', 'add', 'edit', 'delete', 'board', 'logins', 'openclose', 'order'],
   menu: ['view', 'add', 'edit', 'delete', 'price', 'soldout'],
+  catalog: ['view', 'add', 'edit', 'delete'],
   locations: ['view', 'add', 'edit', 'delete', 'geo'],
   users: ['view', 'phone'],
   notifications: ['view', 'send'],

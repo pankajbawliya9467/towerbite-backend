@@ -14,6 +14,7 @@ import { day, like, paging, uuidOrNull, Where } from '../lib/paging.js';
 import { orderWhere, type OrdersQuery } from '../lib/orderFilters.js';
 import { cafesChanged } from '../realtime.js';
 import { saveImage } from '../lib/upload.js';
+import { catalogOn, isLeaf } from '../lib/catalog.js';
 import { csv, sendCsv } from './reports.js';
 
 const slug = z.string().trim().min(2).max(60).regex(/^[a-z0-9-]+$/, 'Use lowercase letters, numbers and dashes');
@@ -85,10 +86,10 @@ const RESOURCES: Record<string, Resource> = {
     cols: {
       cafeId: 'cafe_id', categoryId: 'category_id', name: 'name', description: 'description', price: 'price', isVeg: 'is_veg',
       emoji: 'emoji', imageUrl: 'image_url', isAvailable: 'is_available', isPopular: 'is_popular', sort: 'sort',
-      isActive: 'is_active',
+      isActive: 'is_active', catalogCategoryId: 'catalog_category_id',
     },
     shape: {
-      cafeId: uuid, categoryId: uuid.nullable(), name: z.string().trim().min(1).max(80), description: z.string().trim().max(160),
+      cafeId: uuid, categoryId: uuid.nullable(), catalogCategoryId: uuid.nullable(), name: z.string().trim().min(1).max(80), description: z.string().trim().max(160),
       price: z.number().int().min(0).max(100000), isVeg: z.boolean(), emoji: z.string().trim().max(8), imageUrl: url,
       isAvailable: z.boolean(), isPopular: z.boolean(), sort: z.number().int(), isActive: z.boolean(),
     },
@@ -114,10 +115,23 @@ async function checkCategory(body: Record<string, unknown>, id?: string) {
   }
 }
 
-/** An item's category must belong to the item's cafe. */
+/**
+ * An item's own (old) category must belong to the item's cafe. Its global category must be one a product may
+ * sit in (a sub-category, or a main category without sub-categories); once menus use the global categories,
+ * every product needs one.
+ */
 async function checkItemCategory(body: Record<string, unknown>, id?: string) {
   const categoryId = body.categoryId as string | null | undefined;
   if (body.cafeId !== undefined && id) throw badRequest('An item cannot move to another cafe');
+  const catalogId = body.catalogCategoryId as string | null | undefined;
+  if (catalogId) {
+    const leaf = await isLeaf(catalogId);
+    if (leaf === null) throw badRequest('Category not found');
+    if (!leaf) throw badRequest('Pick a sub-category for this product');
+  } else if (await catalogOn()) {
+    if (!id && !catalogId) throw badRequest('Pick a category for this product');
+    if (id && catalogId === null) throw badRequest('A product needs a category');
+  }
   if (!categoryId) return;
   const cafeId = (body.cafeId as string | undefined) ?? (await one<{ cafe_id: string }>(`select cafe_id from menu_items where id = $1`, [id]))?.cafe_id;
   const cat = await one(`select 1 from categories where id = $1 and cafe_id = $2`, [categoryId, cafeId]);
