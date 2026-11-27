@@ -9,6 +9,7 @@ import { badRequest, forbidden, notFound } from '../lib/errors.js';
 import { assertEmailFree } from '../lib/logins.js';
 import { hashPassword } from '../lib/passwords.js';
 import { endUserSessions } from '../lib/sessions.js';
+import { resetTwoFactor } from '../lib/twoFactor.js';
 
 /**
  * People who run the admin panel. A super admin can do everything; other admins only the sections in
@@ -20,7 +21,7 @@ const Perms = z
   .max(PERMISSIONS.length)
   .transform(normalizePerms);
 const COLS = `id, name, email, is_super as "isSuper", permissions, is_active as "isActive",
-  created_at as "createdAt", password_set_at as "passwordSetAt",
+  created_at as "createdAt", password_set_at as "passwordSetAt", totp_enabled_at is not null as "twoFactor",
   (select count(*)::int from sessions s where s.user_id = admins.id and s.expires_at > now()) as "activeLogins"`;
 
 function checkGrant(me: Staff, perms: string[], isSuper: boolean) {
@@ -126,6 +127,20 @@ export async function adminsRoutes(app: FastifyInstance) {
     const { password } = z.object({ password: z.string().min(8).max(72) }).parse(req.body);
     await target(me, id);
     await q(`update admins set password_hash = $2, password_set_at = now() where id = $1`, [id, await hashPassword(password)]);
+    await endUserSessions(id);
+    return { ok: true };
+  });
+
+  /**
+   * Lost phone: turns off this admin's 2-step login and logs them out everywhere. At their next login they scan a
+   * new QR code. Not for yourself (another admin must do it), and the usual "can't change someone with more access" rule applies.
+   */
+  app.post<{ Params: { id: string } }>('/v1/admin/admins/:id/2fa/reset', async (req) => {
+    const me = await requireAdmin(req, 'admins.edit');
+    const id = z.string().uuid().parse(req.params.id);
+    if (id === me.userId) throw badRequest("You can't reset your own 2-step login. Ask another admin.");
+    await target(me, id);
+    await resetTwoFactor(id);
     await endUserSessions(id);
     return { ok: true };
   });

@@ -9,7 +9,9 @@ Send `Authorization: Bearer <session token>` (our own `tbs_…` token from a log
 | Who | How they log in |
 |---|---|
 | Employee | **Phone OTP**: `POST /v1/auth/otp/send { phone }` → `POST /v1/auth/otp/verify { phone, code }` → `{ token, expiresAt }` |
-| Cafe login / admin | **Email + password**: `POST /v1/auth/staff/login { email, password }` → `{ token, expiresAt }` |
+| Cafe login | **Email + password**: `POST /v1/auth/staff/login { email, password }` → `{ token, expiresAt }` |
+| Admin | **Password, then a 2-step code.** `POST /v1/auth/staff/login` → `{ twoFactor: 'code', challenge, expiresAt }`, or on the first login `{ twoFactor: 'setup', challenge, expiresAt, secret, otpauthUrl, email }` (scan the QR). Then `POST /v1/auth/staff/2fa { challenge, code }` (6-digit authenticator code or a backup code `XXXXX-XXXXX`) → `{ token, expiresAt, backupCodes (first setup only, shown once), usedBackup, backupCodesLeft }`. A challenge lasts 5 minutes / 5 tries; 5 wrong codes lock the admin's code step for 15 minutes; a code works once. |
+| Admin | `GET /v1/auth/2fa` → `{ enabled, enabledAt, backupCodesLeft }` · `POST /v1/auth/2fa/backup-codes { code }` → `{ backupCodes }` (new set; the old ones stop working) |
 | Anyone (CRM) | Change own password: `POST /v1/auth/password { current, next }`; this device stays in, other devices are logged out |
 
 **Dev mode**: when the app env `*_DEV_AUTH=true` and the API has `DEV_AUTH=true`, use the token
@@ -30,7 +32,7 @@ Connect to `wss://<api>/v1/live`, send `{ type: 'auth', token }`, then `{ type: 
 - `GET /v1/locations/:slug/cafes/:cafeSlug` → `CafeWithMenu`
 - `GET /v1/cafes/:id` → `CafeWithMenu`
 
-`Cafe = { id, locationId, slug, name, cuisines, place, emoji, coverColor, imageUrl, phone, rating, ratingCount, etaMin, etaMax, isOpen, acceptingOrders, tags, sort }`
+`Cafe = { id, locationId, slug, name, cuisines, place, emoji, coverColor, imageUrl, phone, rating, ratingCount, etaMin, etaMax, isOpen, acceptingOrders, tags, sort, minOrder }` (`minOrder`: ₹, 0 = none)
 `CafeWithMenu = Cafe & { categories: [{ id, name, sort }], items: MenuItem[] }`
 `MenuItem = { id, cafeId, categoryId, name, description, price, isVeg, emoji, imageUrl, isAvailable, isPopular, sort }`
 Show `imageUrl` when set, otherwise the `emoji` on `coverColor` (that is how the mockups look).
@@ -62,7 +64,7 @@ Tracking screen steps: Accepted by cafe (acceptedAt) · Being prepared · On the
 
 ## Cafe staff (`role = cafe_staff`; a super admin passes header `x-cafe-id: <cafeId>`)
 - `GET /v1/cafe` → `CafeWithMenu & { staff }`
-- `PATCH /v1/cafe` `{ acceptingOrders?, isOpen? }`
+- `PATCH /v1/cafe` `{ acceptingOrders?, isOpen?, minOrder? }` (`minOrder` ₹0–10,000, items + combos; an admin here needs `cafes.edit` for it). Orders below it get 409 `Minimum order at <cafe> is ₹X. Add ₹Y more.` (team orders count the whole team cart).
 - `GET /v1/cafe/orders` → active orders oldest first (New / Preparing / Out for delivery board)
 - `GET /v1/cafe/orders?status=history&date=YYYY-MM-DD` → all orders of that day (default today, IST)
 - `GET /v1/cafe/stats` → `{ orders, delivered, sales, codCollected, active }` for today
@@ -75,7 +77,7 @@ Tracking screen steps: Accepted by cafe (acceptedAt) · Being prepared · On the
 CRUD: `GET/POST /v1/admin/<r>`, `GET/PATCH/DELETE /v1/admin/<r>/:id` for
 - `locations` `{ slug, name, area, city, isActive }`
 - `towers` `{ locationId, name, sort }` (filter `?locationId=`)
-- `cafes` `{ locationId, slug, name, cuisines, place, emoji, coverColor, imageUrl, phone, rating, ratingCount, etaMin, etaMax, isOpen, acceptingOrders, tags, sort }` (filter `?locationId=`)
+- `cafes` `{ locationId, slug, name, cuisines, place, emoji, coverColor, imageUrl, phone, rating, ratingCount, etaMin, etaMax, isOpen, acceptingOrders, tags, sort, minOrder }` (filter `?locationId=`)
 - `categories` `{ cafeId, name, sort }` (filter `?cafeId=`)
 - `menu-items` `{ cafeId, categoryId, name, description, price, isVeg, emoji, imageUrl, isAvailable, isPopular, sort }` (filter `?cafeId=&categoryId=`)
 
@@ -86,7 +88,7 @@ super admins have all. Lists of locations/towers/cafes/categories/menu items are
   `POST /v1/admin/staff` `{ name, email, password, cafeId }` · `PATCH /v1/admin/staff/:userId` `{ name?, email? }` (new email logs them out) ·
   `POST /v1/admin/staff/:userId/password` `{ password }` · `DELETE /v1/admin/staff/:userId`
 - Admins (section `admins`): `GET /v1/admin/admins` · `POST /v1/admin/admins` `{ name, email, password, isSuper?, permissions[] }` ·
-  `PATCH /v1/admin/admins/:id` `{ name?, email?, isSuper?, permissions?, isActive? }` · `POST /v1/admin/admins/:id/password` `{ password }`.
+  `PATCH /v1/admin/admins/:id` `{ name?, email?, isSuper?, permissions?, isActive? }` · `POST /v1/admin/admins/:id/password` `{ password }` · `POST /v1/admin/admins/:id/2fa/reset` (lost phone: 2-step off, logged out everywhere, new QR at next login; not for yourself). The list has `twoFactor`.
   Only a super admin can make or change a super admin; nobody can give access they don't have, or change their own access.
 - `GET /v1/admin/orders?locationId=&cafeId=&status=&limit=` → `Order[]`
 - `GET /v1/admin/users` → `[{ id, name, phone, email, company, tower, floor, desk, locationName, orderCount, spent, createdAt }]`

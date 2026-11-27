@@ -52,12 +52,22 @@ export async function cafeRoutes(app: FastifyInstance) {
 
   app.patch('/v1/cafe', async (req) => {
     const { cafeId, staff } = await requireCafe(req);
-    if (staff.role === 'super_admin' && !can(staff, 'cafes.openclose')) throw noAccess('cafes.openclose');
-    const body = z.object({ acceptingOrders: z.boolean().optional(), isOpen: z.boolean().optional() }).parse(req.body);
+    const body = z.object({
+      acceptingOrders: z.boolean().optional(),
+      isOpen: z.boolean().optional(),
+      /** Minimum order value in ₹ (items + combos); 0 = no minimum. */
+      minOrder: z.number().int().min(0, 'Minimum order: 0 or more').max(10000, 'Minimum order: up to ₹10,000').optional(),
+    }).parse(req.body);
+    // An admin working in the cafe panel needs the matching tick: open/pause, or cafe edit for the minimum order.
+    if (staff.role === 'super_admin') {
+      if ((body.acceptingOrders !== undefined || body.isOpen !== undefined) && !can(staff, 'cafes.openclose')) throw noAccess('cafes.openclose');
+      if (body.minOrder !== undefined && !can(staff, 'cafes.edit')) throw noAccess('cafes.edit');
+    }
     const row = await one<{ location_id: string }>(
-      `update cafes set accepting_orders = coalesce($2, accepting_orders), is_open = coalesce($3, is_open)
+      `update cafes set accepting_orders = coalesce($2, accepting_orders), is_open = coalesce($3, is_open),
+         min_order = coalesce($4, min_order)
        where id = $1 returning location_id`,
-      [cafeId, body.acceptingOrders ?? null, body.isOpen ?? null],
+      [cafeId, body.acceptingOrders ?? null, body.isOpen ?? null, body.minOrder ?? null],
     );
     if (!row) throw notFound('Cafe not found');
     await cafesChanged([row.location_id]);

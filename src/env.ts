@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 function req(name: string): string {
   const v = process.env[name];
@@ -25,8 +26,31 @@ function databaseCa(): string | undefined {
   throw new Error('DATABASE_CA_CERT must be the certificate text or a path to the .crt file');
 }
 
+/**
+ * Key that encrypts the admins' authenticator secrets (any random text, 32+ characters). Required in production:
+ * without it admins can't log in (cafe logins and the apps still work). Local dev uses a fixed key.
+ * Changing it later makes every admin's 2-step login unreadable: a super admin must then reset them.
+ */
+function totpKey(): Buffer | null {
+  const v = process.env.TOTP_KEY?.trim();
+  if (v) {
+    if (v.length < 32) {
+      // The server still starts (cafes and the apps keep working); only admin login is closed until it is fixed.
+      console.error('TOTP_KEY is too short (needs 32+ characters): admins cannot log in until it is fixed.');
+      return null;
+    }
+    return createHash('sha256').update(v).digest();
+  }
+  if (production) {
+    console.error('TOTP_KEY is not set: admins cannot log in until it is added to the server env.');
+    return null;
+  }
+  return createHash('sha256').update('towerbites-local-dev-totp-key').digest();
+}
+
 export const env = {
   port: Number(process.env.PORT ?? 4000),
+  totpKey: totpKey(),
   corsOrigins: (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.trim()).filter(Boolean),
   databaseUrl: req('DATABASE_URL'),
   databaseCa: databaseCa(),

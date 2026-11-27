@@ -1,5 +1,5 @@
 /**
- * Creates a super admin (or resets the password of an existing admin with this email and makes them super).
+ * Creates a super admin (or resets the password and 2-step login of an existing admin with this email and makes them super).
  *   npm run make-admin -- you@company.com "StrongPassword123" "Your Name"
  * Works on any Postgres: the admin lives in our own `admins` table.
  */
@@ -31,6 +31,14 @@ if (found.rows[0]) {
     [found.rows[0].id, hash],
   );
   await pool.query(`delete from sessions where user_id = $1`, [found.rows[0].id]);
+  // Last way back in when an admin lost both the phone and the backup codes: 2-step login is reset too,
+  // and they scan a new QR code at their next login.
+  const reset = await pool.query(
+    `update admins set totp_secret = null, totp_enabled_at = null, totp_last_step = 0 where id = $1 and totp_secret is not null`,
+    [found.rows[0].id],
+  ).catch(() => ({ rowCount: 0 }));
+  await pool.query(`delete from admin_backup_codes where admin_id = $1`, [found.rows[0].id]).catch(() => undefined);
+  if (reset.rowCount) console.log('  2-step login was reset: scan the new QR code at the next login.');
 } else {
   await pool.query(
     `insert into admins (id, name, email, password_hash, password_set_at, is_super) values ($1, $2, $3, $4, now(), true)`,

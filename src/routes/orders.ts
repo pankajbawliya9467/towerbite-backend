@@ -79,8 +79,8 @@ export async function createOrder(input: {
   // All reads at the same time (one wait instead of four).
   const [cafe, menu, allCombos, profile] = await Promise.all([
     one<{ id: string; location_id: string; is_open: boolean; accepting_orders: boolean; name: string;
-      lat: number | null; lng: number | null; geo_check: boolean; geo_radius_m: number }>(
-      `select id, location_id, (is_open and is_active) as is_open, accepting_orders, name, lat, lng, geo_check, geo_radius_m
+      lat: number | null; lng: number | null; geo_check: boolean; geo_radius_m: number; min_order: number }>(
+      `select id, location_id, (is_open and is_active) as is_open, accepting_orders, name, lat, lng, geo_check, geo_radius_m, min_order
        from cafes where id = $1`,
       [input.cafeId],
     ),
@@ -112,6 +112,10 @@ export async function createOrder(input: {
     ...combos.map((x) => ({ id: null as string | null, name: x.name, emoji: x.emoji, price: x.price, qty: comboQty.get(x.id)!, comboId: x.id, detail: comboDetail(x.items) })),
   ];
   const itemsTotal = lines.reduce((s, l) => s + l.price * l.qty, 0);
+  // The cafe's minimum order value (items + combos, after combo savings).
+  if (cafe.min_order > 0 && itemsTotal < cafe.min_order) {
+    throw conflict(`Minimum order at ${cafe.name} is ₹${cafe.min_order}. Add ₹${cafe.min_order - itemsTotal} more.`);
+  }
   const savings = combos.reduce((s, x) => s + Math.max(0, x.mrp - x.price) * comboQty.get(x.id)!, 0);
   const deliveryFee = 0;
 

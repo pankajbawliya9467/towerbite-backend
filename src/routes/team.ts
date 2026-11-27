@@ -49,14 +49,14 @@ type TeamRow = {
   deliver_at: string | null; closes_at: Date; pay_mode: 'split' | 'host'; host_upi: string | null;
   status: 'open' | 'placed' | 'cancelled'; order_id: string | null; created_at: Date;
   tower: string; floor: string; company: string;
-  cafe_name: string; cafe_place: string; cafe_color: string; cafe_emoji: string; host_name: string | null;
+  cafe_name: string; cafe_place: string; cafe_color: string; cafe_emoji: string; cafe_logo: string | null; cafe_min_order: number; host_name: string | null;
 };
 
 async function teamByCode(code: string) {
   if (!CODE.test(code)) throw notFound('Team order not found');
   const t = await one<TeamRow>(
     `select t.*, to_char(t.deliver_at, 'HH24:MI') as deliver_at, c.name as cafe_name, c.place as cafe_place,
-       c.cover_color as cafe_color, c.emoji as cafe_emoji, p.name as host_name
+       c.cover_color as cafe_color, c.emoji as cafe_emoji, c.logo_url as cafe_logo, c.min_order as cafe_min_order, p.name as host_name
      from team_orders t join cafes c on c.id = t.cafe_id left join profiles p on p.id = t.host_id
      where t.code = $1`,
     [code],
@@ -121,7 +121,7 @@ async function teamView(t: TeamRow, userId: string) {
     status: isClosed(t) ? 'closed' : t.status,
     isHost: t.host_id === userId,
     hostName: t.host_name || 'Your teammate',
-    cafe: { id: t.cafe_id, name: t.cafe_name, place: t.cafe_place, coverColor: t.cafe_color, emoji: t.cafe_emoji },
+    cafe: { id: t.cafe_id, name: t.cafe_name, place: t.cafe_place, coverColor: t.cafe_color, emoji: t.cafe_emoji, logoUrl: t.cafe_logo, minOrder: t.cafe_min_order },
     people,
     peopleWithItems: withItems.length,
     itemCount: items.reduce((s, i) => s + i.qty, 0),
@@ -170,7 +170,7 @@ export async function teamRoutes(app: FastifyInstance) {
     if (!cafe) throw notFound('Cafe not found');
     if (!cafe.is_open || !cafe.accepting_orders) throw conflict(`${cafe.name} is not taking orders right now`);
     checkGeo(cafe, body.geo); // the host starts the team order from inside the building
-    if (!profile?.tower || !profile.floor) throw badRequest('Add your tower and floor first (Profile → Desk address)');
+    if (!profile?.tower || !profile.floor) throw badRequest('Add your desk address first (tower and floor), so the cafe knows where to deliver.');
     const code = await tx(async (c) => {
       // Checked under a per-user lock, so parallel requests can't get past the limit.
       await c.query(`select pg_advisory_xact_lock(hashtext($1))`, [`team:${user.id}`]);

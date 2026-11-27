@@ -8,6 +8,7 @@ import { badRequest, tooMany, unauthorized } from '../lib/errors.js';
 import { passwordProvider } from '../lib/otp.js';
 import { burnTime, hashPassword, verifyPassword } from '../lib/passwords.js';
 import { createSession, endOtherSessions } from '../lib/sessions.js';
+import { answerChallenge, regenerateBackupCodes, startChallenge, twoFactorStatus } from '../lib/twoFactor.js';
 
 /**
  * CRM login (admins and cafe logins) through our API: email + password → our own session token.
@@ -96,7 +97,45 @@ export async function authStaffRoutes(app: FastifyInstance) {
     if (!ok) throw fail();
 
     fails.delete(pair);
-    return createSession(login.id, null, String(req.headers['user-agent'] ?? ''), false, body.email, login.table === 'admins' ? 'admin' : 'cafe');
+    const userAgent = String(req.headers['user-agent'] ?? '');
+    if (login.table === 'admins') {
+      // Admins also need a code from their authenticator app: no session yet, only a 5-minute challenge.
+      const a = await one<{ email: string; enabled: boolean }>(
+        `select email, totp_secret is not null as enabled from admins where id = $1`,
+        [login.id],
+      );
+      return startChallenge({ id: login.id, email: a?.email ?? body.email, enabled: !!a?.enabled }, userAgent);
+    }
+    return createSession(login.id, null, userAgent, false, body.email, 'cafe');
+  });
+
+  /**
+   * Admin login, step 2: the challenge from step 1 plus a 6-digit authenticator code or a backup code.
+   * After a first-time setup the answer also has the admin's backup codes (shown once).
+   */
+  app.post('/v1/auth/staff/2fa', { config: { rateLimit: { max: 20, timeWindow: '15 minutes' } } }, async (req) => {
+    const body = z
+      .object({ challenge: z.string().trim().regex(/^tbc_[A-Za-z0-9_-]{20,80}$/, 'Please log in again'), code: z.string().trim().min(6).max(20) })
+      .parse(req.body);
+    const r = await answerChallenge(body.challenge, body.code);
+    const session = await createSession(r.adminId, null, r.userAgent, false, r.email, 'admin');
+    const status = await twoFactorStatus(r.adminId);
+    return { ...session, backupCodes: r.backupCodes ?? null, usedBackup: !!r.usedBackup, backupCodesLeft: status.backupCodesLeft };
+  });
+
+  /** Your own 2-step status (admins). */
+  app.get('/v1/auth/2fa', async (req) => {
+    const user = await requireUser(req);
+    if (!(await one(`select 1 from admins where id = $1`, [user.id]))) throw badRequest('2-step login is for admin logins');
+    return twoFactorStatus(user.id);
+  });
+
+  /** New backup codes (the old ones stop working), with a current authenticator code. */
+  app.post('/v1/auth/2fa/backup-codes', { config: { rateLimit: { max: 5, timeWindow: '15 minutes' } } }, async (req) => {
+    const user = await requireUser(req);
+    const { code } = z.object({ code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code') }).parse(req.body);
+    if (!(await one(`select 1 from admins where id = $1 and is_active`, [user.id]))) throw badRequest('2-step login is for admin logins');
+    return { backupCodes: await regenerateBackupCodes(user.id, code) };
   });
 
   /** Change your own CRM password with the current one. Other devices are logged out; this one stays in. */

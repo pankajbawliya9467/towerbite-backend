@@ -56,7 +56,7 @@ const RESOURCES: Record<string, Resource> = {
       locationId: 'location_id', slug: 'slug', name: 'name', cuisines: 'cuisines', place: 'place', emoji: 'emoji',
       coverColor: 'cover_color', imageUrl: 'image_url', logoUrl: 'logo_url', phone: 'phone', rating: 'rating', ratingCount: 'rating_count',
       etaMin: 'eta_min', etaMax: 'eta_max', isOpen: 'is_open', acceptingOrders: 'accepting_orders', tags: 'tags', sort: 'sort',
-      isActive: 'is_active', lat: 'lat', lng: 'lng', geoRadiusM: 'geo_radius_m', geoCheck: 'geo_check',
+      isActive: 'is_active', lat: 'lat', lng: 'lng', geoRadiusM: 'geo_radius_m', geoCheck: 'geo_check', minOrder: 'min_order',
     },
     shape: {
       locationId: uuid, slug, name: z.string().trim().min(2).max(80), cuisines: z.string().trim().max(120),
@@ -67,6 +67,8 @@ const RESOURCES: Record<string, Resource> = {
       sort: z.number().int(), isActive: z.boolean(),
       lat: z.number().min(-90).max(90).nullable(), lng: z.number().min(-180).max(180).nullable(),
       geoRadiusM: z.number().int().min(50).max(2000), geoCheck: z.boolean(),
+      /** ₹, items + combos; 0 = no minimum */
+      minOrder: z.number().int().min(0).max(10000),
     },
     required: ['locationId', 'slug', 'name'],
     filters: ['locationId'],
