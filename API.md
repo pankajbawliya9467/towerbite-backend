@@ -112,3 +112,12 @@ When the switch is on, `CafeWithMenu.categories` comes from the global list (onl
 products in, plus their main categories) and `MenuItem.categoryId` is the global category. The apps don't change.
 A product without a global category gets `categoryId = 00000000-0000-4000-8000-00000000c0de` ("More"), so it
 never disappears from a menu.
+
+## Products from Excel (one cafe per file)
+- `GET /v1/admin/menu-items/template.xlsx?cafeId=` (`menu.view`) → `.xlsx` with sheets **Products** (this cafe's products), **Categories** (valid Category / Sub-category pairs, dropdown source) and **How to**.
+- `POST /v1/admin/menu-items/import?cafeId=&commit=0|1` multipart `file` (any of `menu.add | menu.edit | menu.price`).
+  Columns by header (any order): `Product name*`, `Price*` (whole ₹), `Category*`, `Sub-category` (empty when the category has none), `Veg`, `Description`, `In stock`, `Popular` (Yes/No); optional `Emoji` (new products get none: add photos later).
+  Matched by product name inside the cafe: known → update, new → add, nothing deleted. Blank optional cells keep the current value.
+  Answer `{ saved, summary: { new, update, same, error }, rows: [{ row, name, status, errors[], changes[], categoryPath }], switchOff }`.
+  `commit=0` = preview only; `commit=1` saves every row without errors in one transaction. New rows need `menu.add`, price changes `menu.price`, stock `menu.soldout`, other changes `menu.edit`.
+  A sample file is in the CRM: `crm-admin/public/templates/towerbites-products-sample.xlsx`.
