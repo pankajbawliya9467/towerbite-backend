@@ -4,6 +4,7 @@ import { CAFE_COLS, ITEM_COLS } from '../lib/sql.js';
 import { notFound } from '../lib/errors.js';
 import { cafeCombos } from '../lib/combos.js';
 import { catalogOn, OTHER_CATEGORY } from '../lib/catalog.js';
+import { areaCenter, type Area } from '../lib/geo.js';
 
 /**
  * The categories a menu shows. Switch off: the cafe's own categories. Switch on (global categories): only the
@@ -31,7 +32,12 @@ export async function cafeWithMenu(cafeId: string, forCustomers = false) {
   const global = await catalogOn();
   // Independent reads in parallel (one round trip to the database instead of several).
   const [cafe, categories, items, combos, likes] = await Promise.all([
-    one(`select ${CAFE_COLS} from cafes c where c.id = $1`, [cafeId]),
+    // With the cafe's location: the app and website check the customer is inside its area before ordering.
+    one(
+      `select ${CAFE_COLS}, l.name as "locationName", l.area_geo as "locationArea", l.outside_allowed as "outsideAllowed"
+       from cafes c join locations l on l.id = c.location_id where c.id = $1`,
+      [cafeId],
+    ),
     menuCategories(cafeId, global, forCustomers),
     q<{ id: string; categoryId: string | null; catalogCategoryId: string | null }>(
       `select ${ITEM_COLS} from menu_items i where i.cafe_id = $1 ${forCustomers ? 'and i.is_active' : ''}
@@ -62,14 +68,18 @@ export async function cafeWithMenu(cafeId: string, forCustomers = false) {
 export async function publicRoutes(app: FastifyInstance) {
   app.get('/v1/health', async () => ({ ok: true }));
 
-  app.get('/v1/locations', async () =>
-    q(`select l.id, l.slug, l.name, l.area, l.city,
-         (select count(*)::int from cafes c where c.location_id = l.id and c.is_active) as "cafeCount",
-         -- where the building is: the middle of its cafes' pins (null until a cafe has one)
-         (select avg(c.lat) from cafes c where c.location_id = l.id and c.is_active and c.lat is not null) as lat,
-         (select avg(c.lng) from cafes c where c.location_id = l.id and c.is_active and c.lng is not null) as lng
-       from locations l where l.is_active order by l.city, "cafeCount" desc, l.name`),
-  );
+  /**
+   * Live locations with their drawn area. The app and website find the one the customer is standing in
+   * (and how far the others are); `lat`/`lng` is the middle of the area, for the map.
+   */
+  app.get('/v1/locations', async () => {
+    const rows = await q<{ areaGeo: Area | null } & Record<string, unknown>>(
+      `select l.id, l.slug, l.name, l.area, l.city, l.area_geo as "areaGeo", l.outside_allowed as "outsideAllowed",
+         (select count(*)::int from cafes c where c.location_id = l.id and c.is_active) as "cafeCount"
+       from locations l where l.is_active and l.area_geo is not null order by l.city, "cafeCount" desc, l.name`,
+    );
+    return rows.map((r) => ({ ...r, ...(r.areaGeo && r.areaGeo.length >= 3 ? areaCenter(r.areaGeo) : { lat: null, lng: null }) }));
+  });
 
   app.get<{ Params: { slug: string } }>('/v1/locations/:slug', async (req) => {
     const loc = await one(

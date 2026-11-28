@@ -25,7 +25,8 @@ The API pings, the app re-fetches from the API. Always also poll as a fallback (
 Connect to `wss://<api>/v1/live`, send `{ type: 'auth', token }`, then `{ type: 'sub', topic: 'cafe:<id>' }`.
 
 ## Public (no login)
-- `GET /v1/locations` → `[{ id, slug, name, area, city, cafeCount }]`
+- `GET /v1/locations` → `[{ id, slug, name, area, city, cafeCount, areaGeo, outsideAllowed, lat, lng }]`: live locations that have an area. `areaGeo` = the campus outline, corners as `[lat, lng]`; `lat`/`lng` = its middle. The apps match the customer to the area they stand in (40 m + up to 60 m of GPS accuracy of slack).
+- **Ordering from inside:** `POST /v1/orders` and `POST /v1/team-orders` take `geo: { lat, lng, accuracy?, mocked? }`. Unless the cafe's location has `outsideAllowed`, the order is refused (409) when `geo` is missing, a fake-GPS app is on, or the point is outside the area (+ slack). A location without an area takes no orders. `GET /v1/cafes/:id` carries `locationName`, `locationArea`, `outsideAllowed` so the apps can check first.
 - `GET /v1/locations/:slug` → `{ id, slug, name, area, city, towers: [{ id, name }] }`
 - `GET /v1/locations/:slug/cafes?tag=coffee|snacks|meals|healthy&search=` → `Cafe[]`
 - `GET /v1/locations/:slug/popular` → `(MenuItem & { cafe: { id, slug, name } })[]`
@@ -75,7 +76,9 @@ Tracking screen steps: Accepted by cafe (acceptedAt) · Being prepared · On the
 
 ## Super admin (`role = super_admin`)
 CRUD: `GET/POST /v1/admin/<r>`, `GET/PATCH/DELETE /v1/admin/<r>/:id` for
-- `locations` `{ slug, name, area, city, isActive }`
+- `locations` `{ slug, name, area, city, isActive, outsideAllowed }` (+ read-only `areaGeo`). `isActive: true` needs an area. `outsideAllowed` needs `locations.geo`.
+- `PUT /v1/admin/locations/:id/area` `{ area: [[lat, lng], …] | null }` (`locations.geo`): 3–200 corners, 30 m–5 km across, edges must not cross; `null` only while not live.
+- `POST /v1/admin/notifications/test` `{ phone }` (`notifications.send`): sends a test push to that customer's phones and waits for Expo's receipts → `{ name, phone, devices, summary, results: [{ platform, state: delivered|sent|failed, error, fix }] }`.
 - `towers` `{ locationId, name, sort }` (filter `?locationId=`)
 - `cafes` `{ locationId, slug, name, cuisines, place, emoji, coverColor, imageUrl, phone, rating, ratingCount, etaMin, etaMax, isOpen, acceptingOrders, tags, sort, minOrder }` (filter `?locationId=`)
 - `categories` `{ cafeId, name, sort }` (filter `?cafeId=`)

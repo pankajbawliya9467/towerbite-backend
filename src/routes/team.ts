@@ -1,7 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { randomInt } from 'node:crypto';
 import { z } from 'zod';
-import { checkGeo, GeoInput } from '../lib/geo.js';
+import { checkLocationGeo, GeoInput, type Area } from '../lib/geo.js';
 import { one, q, tx } from '../db.js';
 import { requireUser } from '../auth.js';
 import { badRequest, conflict, forbidden, notFound, tooMany } from '../lib/errors.js';
@@ -157,9 +157,10 @@ export async function teamRoutes(app: FastifyInstance) {
     const body = CreateTeam.parse(req.body);
     const [cafe, profile] = await Promise.all([
       one<{ id: string; location_id: string; name: string; is_open: boolean; accepting_orders: boolean;
-        lat: number | null; lng: number | null; geo_check: boolean; geo_radius_m: number }>(
-        `select id, location_id, name, (is_open and is_active) as is_open, accepting_orders, lat, lng, geo_check, geo_radius_m
-         from cafes where id = $1`,
+        loc_name: string; area_geo: Area | null; outside_allowed: boolean }>(
+        `select c.id, c.location_id, c.name, (c.is_open and c.is_active) as is_open, c.accepting_orders,
+           l.name as loc_name, l.area_geo, l.outside_allowed
+         from cafes c join locations l on l.id = c.location_id where c.id = $1`,
         [body.cafeId],
       ),
       one<{ name: string; tower: string; floor: string; company: string }>(
@@ -169,7 +170,8 @@ export async function teamRoutes(app: FastifyInstance) {
     ]);
     if (!cafe) throw notFound('Cafe not found');
     if (!cafe.is_open || !cafe.accepting_orders) throw conflict(`${cafe.name} is not taking orders right now`);
-    checkGeo(cafe, body.geo); // the host starts the team order from inside the building
+    // The host starts the team order from inside the location's area (the order itself is placed later, from anywhere).
+    checkLocationGeo({ name: cafe.loc_name, area_geo: cafe.area_geo, outside_allowed: cafe.outside_allowed }, body.geo);
     if (!profile?.tower || !profile.floor) throw badRequest('Add your desk address first (tower and floor), so the cafe knows where to deliver.');
     const code = await tx(async (c) => {
       // Checked under a per-user lock, so parallel requests can't get past the limit.

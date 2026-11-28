@@ -7,7 +7,7 @@ import { badRequest, conflict, forbidden, notFound, tooMany } from '../lib/error
 import { env } from '../env.js';
 import { orderChanged } from '../realtime.js';
 import { cafeCombos, comboDetail } from '../lib/combos.js';
-import { checkGeo, GeoInput, type Geo } from '../lib/geo.js';
+import { checkLocationGeo, GeoInput, type Area, type Geo } from '../lib/geo.js';
 
 const PlaceOrder = z.object({
   cafeId: z.string().uuid(),
@@ -79,9 +79,10 @@ export async function createOrder(input: {
   // All reads at the same time (one wait instead of four).
   const [cafe, menu, allCombos, profile] = await Promise.all([
     one<{ id: string; location_id: string; is_open: boolean; accepting_orders: boolean; name: string;
-      lat: number | null; lng: number | null; geo_check: boolean; geo_radius_m: number; min_order: number }>(
-      `select id, location_id, (is_open and is_active) as is_open, accepting_orders, name, lat, lng, geo_check, geo_radius_m, min_order
-       from cafes where id = $1`,
+      min_order: number; loc_name: string; area_geo: Area | null; outside_allowed: boolean }>(
+      `select c.id, c.location_id, (c.is_open and c.is_active) as is_open, c.accepting_orders, c.name, c.min_order,
+         l.name as loc_name, l.area_geo, l.outside_allowed
+       from cafes c join locations l on l.id = c.location_id where c.id = $1`,
       [input.cafeId],
     ),
     ids.length
@@ -95,7 +96,8 @@ export async function createOrder(input: {
   ]);
   if (!cafe) throw notFound('Cafe not found');
   if (!cafe.is_open || !cafe.accepting_orders) throw conflict(`${cafe.name} is not taking orders right now`);
-  if (!input.skipGeo) checkGeo(cafe, input.geo);
+  // Orders only from inside the location's drawn area (unless it allows outside orders).
+  if (!input.skipGeo) checkLocationGeo({ name: cafe.loc_name, area_geo: cafe.area_geo, outside_allowed: cafe.outside_allowed }, input.geo);
   if (menu.length !== ids.length) throw badRequest('Some items are not on this cafe\'s menu');
   const unavailable = menu.filter((m) => !m.is_available);
   if (unavailable.length) throw conflict(`${unavailable.map((m) => m.name).join(', ')} is out of stock`);

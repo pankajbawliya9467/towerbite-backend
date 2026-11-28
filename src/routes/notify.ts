@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { one, q } from '../db.js';
 import { requireAdmin, requireUser } from '../auth.js';
 import { badRequest, conflict, notFound, tooMany } from '../lib/errors.js';
-import { pushToUsers } from '../push.js';
+import { pushTest, pushToUsers } from '../push.js';
 import { AI_STYLES, AiError, aiConfig, askOpenAi, catalogFor, checkIdea, istNow, situation, targetLabel } from '../lib/aiNotify.js';
 import { day, like, paging, uuidOrNull, Where } from '../lib/paging.js';
 import { csv, sendCsv } from './reports.js';
@@ -118,6 +118,20 @@ async function resolve(a: Audience): Promise<{ ids: string[]; label: string }> {
 }
 
 export async function notifyRoutes(app: FastifyInstance) {
+  /**
+   * Sends a test notification to one customer's phones (by mobile number) and reports what happened:
+   * no phone registered, an Expo / Firebase setup problem (with the fix), or delivered.
+   */
+  app.post('/v1/admin/notifications/test', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, async (req) => {
+    await requireAdmin(req, 'notifications.send');
+    const { phone: raw } = z.object({ phone: z.string().trim().min(10).max(16) }).parse(req.body);
+    const phone = normPhone(raw);
+    if (!/^\+\d{11,15}$/.test(phone)) throw badRequest('Enter a 10-digit mobile number');
+    const user = await one<{ id: string; name: string | null }>(`select id, name from profiles where phone = $1`, [phone]);
+    if (!user) throw badRequest('No customer has logged in with this number yet.');
+    return { name: user.name, phone, ...(await pushTest(user.id)) };
+  });
+
   /** How many people/devices an audience reaches, before sending. */
   app.post('/v1/admin/notifications/preview', async (req) => {
     await requireAdmin(req, 'notifications.send');

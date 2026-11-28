@@ -16,6 +16,7 @@ import { cafesChanged } from '../realtime.js';
 import { saveImage } from '../lib/upload.js';
 import { catalogOn, isLeaf } from '../lib/catalog.js';
 import { csv, sendCsv } from './reports.js';
+import { AreaInput, distanceM, type Area } from '../lib/geo.js';
 
 const slug = z.string().trim().min(2).max(60).regex(/^[a-z0-9-]+$/, 'Use lowercase letters, numbers and dashes');
 const uuid = z.string().uuid();
@@ -37,10 +38,21 @@ type Resource = {
 const RESOURCES: Record<string, Resource> = {
   locations: {
     table: 'locations',
-    cols: { slug: 'slug', name: 'name', area: 'area', city: 'city', isActive: 'is_active' },
-    shape: { slug, name: z.string().trim().min(2).max(80), area: z.string().trim().max(80), city: z.string().trim().max(60), isActive: z.boolean() },
+    // areaGeo is read here but changed only with PUT /v1/admin/locations/:id/area (it is not in `shape`).
+    cols: { slug: 'slug', name: 'name', area: 'area', city: 'city', isActive: 'is_active', areaGeo: 'area_geo', outsideAllowed: 'outside_allowed' },
+    shape: {
+      slug, name: z.string().trim().min(2).max(80), area: z.string().trim().max(80), city: z.string().trim().max(60), isActive: z.boolean(),
+      /** false: orders only from inside the drawn area */
+      outsideAllowed: z.boolean(),
+    },
     required: ['slug', 'name'],
     order: 'city, name',
+    // A location goes live only with an area: that is how customers are matched to it and orders are checked.
+    check: async (body, id) => {
+      if (body.isActive !== true) return;
+      const row = id ? await one<{ area_geo: unknown }>(`select area_geo from locations where id = $1`, [id]) : null;
+      if (!row?.area_geo) throw badRequest("Draw the location's area on the map before making it live.");
+    },
   },
   towers: {
     table: 'towers',
@@ -56,7 +68,7 @@ const RESOURCES: Record<string, Resource> = {
       locationId: 'location_id', slug: 'slug', name: 'name', cuisines: 'cuisines', place: 'place', emoji: 'emoji',
       coverColor: 'cover_color', imageUrl: 'image_url', logoUrl: 'logo_url', phone: 'phone', rating: 'rating', ratingCount: 'rating_count',
       etaMin: 'eta_min', etaMax: 'eta_max', isOpen: 'is_open', acceptingOrders: 'accepting_orders', tags: 'tags', sort: 'sort',
-      isActive: 'is_active', lat: 'lat', lng: 'lng', geoRadiusM: 'geo_radius_m', geoCheck: 'geo_check', minOrder: 'min_order',
+      isActive: 'is_active', minOrder: 'min_order',
     },
     shape: {
       locationId: uuid, slug, name: z.string().trim().min(2).max(80), cuisines: z.string().trim().max(120),
@@ -65,8 +77,7 @@ const RESOURCES: Record<string, Resource> = {
       imageUrl: url, logoUrl: url, phone: z.string().trim().max(20).nullable(), etaMin: z.number().int().min(1).max(120), etaMax: z.number().int().min(1).max(180),
       isOpen: z.boolean(), acceptingOrders: z.boolean(), tags: z.array(z.string().trim().toLowerCase().max(20)).max(10),
       sort: z.number().int(), isActive: z.boolean(),
-      lat: z.number().min(-90).max(90).nullable(), lng: z.number().min(-180).max(180).nullable(),
-      geoRadiusM: z.number().int().min(50).max(2000), geoCheck: z.boolean(),
+      // Where orders are allowed from comes from the cafe's location (its drawn area), not from the cafe.
       /** ₹, items + combos; 0 = no minimum */
       minOrder: z.number().int().min(0).max(10000),
     },
@@ -165,14 +176,37 @@ const SECTION: Record<string, 'locations' | 'cafes' | 'menu'> = {
 const FIELD_PERM: Record<string, Record<string, Permission>> = {
   cafes: {
     isActive: 'cafes.delete', isOpen: 'cafes.openclose', acceptingOrders: 'cafes.openclose',
-    lat: 'locations.geo', lng: 'locations.geo', geoRadiusM: 'locations.geo', geoCheck: 'locations.geo',
   },
   'menu-items': { price: 'menu.price', isAvailable: 'menu.soldout', isActive: 'menu.delete' },
-  locations: { isActive: 'locations.delete' },
+  locations: { isActive: 'locations.delete', outsideAllowed: 'locations.geo' },
 };
 /** Same value? (forms send every field; only real changes are checked). Numbers from numeric columns come as text. */
 const norm = (v: unknown) =>
   v == null ? null : typeof v === 'object' ? JSON.stringify(v) : /^-?\d+(\.\d+)?$/.test(String(v)) ? Number(v) : String(v);
+
+/**
+ * A drawn area must be a real outline: not tiny, not huge (a location is a campus, not a city), and its
+ * edges must not cross (a figure-8 can't be checked properly).
+ */
+function assertSimpleArea(area: Area) {
+  let maxSide = 0;
+  for (let i = 0; i < area.length; i++) {
+    for (let j = i + 1; j < area.length; j++) maxSide = Math.max(maxSide, distanceM(area[i][0], area[i][1], area[j][0], area[j][1]));
+  }
+  if (maxSide < 30) throw badRequest('The area is too small. Draw around the whole campus.');
+  if (maxSide > 5000) throw badRequest('The area is too big (over 5 km across). Draw just the campus.');
+  const n = area.length;
+  const cross = (a: number[], b: number[], c: number[]) => (b[1] - a[1]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[1] - a[1]);
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue; // neighbours through the closing edge
+      const [a, b, c, d] = [area[i], area[(i + 1) % n], area[j], area[(j + 1) % n]];
+      if (cross(a, b, c) * cross(a, b, d) < 0 && cross(c, d, a) * cross(c, d, b) < 0) {
+        throw badRequest('Two edges of the area cross each other. Redraw it going around the campus in one direction.');
+      }
+    }
+  }
+}
 
 export async function adminRoutes(app: FastifyInstance) {
   for (const [name, r] of Object.entries(RESOURCES)) {
@@ -208,7 +242,6 @@ export async function adminRoutes(app: FastifyInstance) {
     app.post(`/v1/admin/${name}`, async (req, reply) => {
       const me = await requireAdmin(req, `${sec}.add` as Permission);
       const body = partial.parse(req.body) as Record<string, unknown>;
-      if (name === 'cafes' && (body.geoCheck === true || body.lat != null) && !can(me, 'locations.geo')) throw noAccess('locations.geo');
       for (const k of r.required) if (body[k] === undefined) throw badRequest(`${k} is required`);
       await r.check?.(body);
       const keys = Object.keys(body).filter((k) => body[k] !== undefined);
@@ -259,6 +292,23 @@ export async function adminRoutes(app: FastifyInstance) {
       return { ok: true };
     });
   }
+
+  /**
+   * A location's area, drawn on the map in the CRM: corners as [lat, lng]. null removes it (only while the
+   * location is not live). Customers are matched to locations by it, and orders are checked against it.
+   */
+  app.put<{ Params: { id: string } }>('/v1/admin/locations/:id/area', async (req) => {
+    await requireAdmin(req, 'locations.geo');
+    const id = uuid.parse(req.params.id);
+    const { area } = z.object({ area: AreaInput.nullable() }).parse(req.body);
+    const cur = await one<{ is_active: boolean }>(`select is_active from locations where id = $1`, [id]);
+    if (!cur) throw notFound('Location not found');
+    if (!area && cur.is_active) throw badRequest('Turn the location off (not live) before removing its area.');
+    if (area) assertSimpleArea(area);
+    await q(`update locations set area_geo = $2::jsonb where id = $1`, [id, area ? JSON.stringify(area) : null]);
+    await cafesChanged([id]);
+    return one(`select ${selectList(RESOURCES.locations)} from locations where id = $1`, [id]);
+  });
 
   /**
    * Order of the cafes in one building (app + website list): the ids from top to bottom. Open cafes still
